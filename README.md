@@ -1,1 +1,1 @@
-# Flow-Based-Prior-Model
+# Flow-Based Prior Model
