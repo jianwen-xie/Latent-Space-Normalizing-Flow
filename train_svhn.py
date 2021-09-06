@@ -28,7 +28,7 @@ import torchvision.transforms as transforms
 
 import pygrid
 
-from model import _netG, _netE, _netF, weights_init_xavier
+from model import _netG, _netF, weights_init_xavier
 
 ##########################################################################################################
 ## Parameters
@@ -37,30 +37,15 @@ def parse_args():
 
     parser = argparse.ArgumentParser()
 
+    parser.add_argument('--train_mode', type=bool, default=True, help='training or test mode')
     parser.add_argument('--seed', default=1, type=int)
-
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
-
-    parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'celeba', 'celeba_crop', 'celeba32_sri', 'celeba64_sri', 'celeba64_sri_crop'])
+    parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'celeba', 'celeba_crop'])
     parser.add_argument('--img_size', default=32, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
-
     parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
     parser.add_argument('--nc', default=3)
-
-    #parser.add_argument('--nez', default=1, help='size of the output of ebm')
     parser.add_argument('--ngf', default=64, help='feature dimensions of generator')
-    #parser.add_argument('--ndf', default=200, help='feature dimensions of ebm')
-
-    # parser.add_argument('--e_prior_sig', type=float, default=1, help='prior of ebm z')
-    # #parser.add_argument('--e_init_sig', type=float, default=1, help='sigma of initial distribution')
-    # parser.add_argument('--e_activation', type=str, default='gelu', choices=['gelu', 'lrelu', 'swish', 'mish'])
-    # parser.add_argument('--e_activation_leak', type=float, default=0.2)
-    # parser.add_argument('--e_energy_form', default='identity', choices=['identity', 'tanh', 'sigmoid', 'softplus'])
-    # parser.add_argument('--e_l_steps', type=int, default=60, help='number of langevin steps')
-    # parser.add_argument('--e_l_step_size', type=float, default=0.4, help='stepsize of langevin')
-    # parser.add_argument('--e_l_with_noise', default=True, type=bool, help='noise term of langevin')
-    # parser.add_argument('--e_sn', default=False, type=bool, help='spectral regularization')
 
     parser.add_argument('--g_llhd_sigma', type=float, default=0.3, help='prior of factor analysis')
     parser.add_argument('--g_activation', type=str, default='lrelu')
@@ -70,61 +55,42 @@ def parse_args():
     parser.add_argument('--g_l_with_noise', default=True, type=bool, help='noise term of langevin')
     parser.add_argument('--g_batchnorm', default=False, type=bool, help='batch norm')
 
-    # parser.add_argument('--f_in_channel', default=100, help='in channel of flow model')
-    # parser.add_argument('--f_n_flow', default=30, type=int, help='number of flows in each block')
-    # parser.add_argument('--f_n_block', default=1, type=int, help='number of blocks')
-    # parser.add_argument('--f_affine', default=True, type=bool, help='use affine coupling instead of additive')
-    # parser.add_argument('--f_conv_lu', default=True, type=bool, help='use LU decomposed version instead of plain convolution')
-    # parser.add_argument('--n_bits', default=5, type=int, help='number of bits')
-    # parser.add_argument('--temp', default=0.7, type=float, help='temperature of sampling')
+    parser.add_argument('--f_n_levels', default=1, type=int, help='')
+    parser.add_argument('--f_depth', default=5, type=int, help='') # 10
+    parser.add_argument('--f_flow_permutation', default=2, type=int, help='')
+    parser.add_argument('--f_width', default=64, type=int, help='')
+    parser.add_argument('--f_flow_coupling', default=1, type=int, help='')
 
-    parser.add_argument('--n_levels', default=1, type=int, help='')
-    parser.add_argument('--depth', default=5, type=int, help='') # 10
-    parser.add_argument('--flow_permutation', default=2, type=int, help='')
-    parser.add_argument('--width', default=64, type=int, help='')
-    parser.add_argument('--flow_coupling', default=1, type=int, help='')
+    parser.add_argument('--g_lr', default=0.0004, type=float) # 0.0004
+    parser.add_argument('--f_lr', default=0.0004, type=float) # 0.0004
 
-    # parser.add_argument('--e_lr', default=0.00002, type=float)
-    parser.add_argument('--g_lr', default=0.0004, type=float)
-    parser.add_argument('--f_lr', default=0.0004, type=float) # 0.0002
-
-    # parser.add_argument('--e_is_grad_clamp', type=bool, default=False, help='whether doing the gradient clamp')
     parser.add_argument('--g_is_grad_clamp', type=bool, default=False, help='whether doing the gradient clamp')
     parser.add_argument('--f_is_grad_clamp', type=bool, default=False, help='whether doing the gradient clamp')
 
-    #parser.add_argument('--e_max_norm', type=float, default=100, help='max norm allowed')
     parser.add_argument('--g_max_norm', type=float, default=100, help='max norm allowed')
     parser.add_argument('--f_max_norm', type=float, default=100, help='max norm allowed')
 
-    #parser.add_argument('--e_decay', default=0, help='weight decay for ebm')
     parser.add_argument('--g_decay',  default=0, help='weight decay for gen')
     parser.add_argument('--f_decay', default=0, help='weight decay for flow')
 
-    #parser.add_argument('--e_gamma', default=0.998, help='lr decay for ebm')
     parser.add_argument('--g_gamma', default=0.998, help='lr decay for gen')
     parser.add_argument('--f_gamma', default=0.998, help='lr decay for flow')
 
     parser.add_argument('--g_beta1', default=0.5, type=float)
     parser.add_argument('--g_beta2', default=0.999, type=float)
 
-    #parser.add_argument('--e_beta1', default=0.5, type=float)
-    #parser.add_argument('--e_beta2', default=0.999, type=float)
-
     parser.add_argument('--f_beta1', default=0.5, type=float)
     parser.add_argument('--f_beta2', default=0.999, type=float)
 
-    parser.add_argument('--n_epochs', type=int, default=201, help='number of epochs to train for') # TODO(nijkamp): set to >100
-    # parser.add_argument('--n_epochs', type=int, default=1, help='number of epochs to train for')
+    parser.add_argument('--n_epochs', type=int, default=201, help='number of epochs to train for')
     parser.add_argument('--n_printout', type=int, default=20, help='printout each n iterations')
     parser.add_argument('--n_plot', type=int, default=1, help='plot each n epochs')
 
     parser.add_argument('--n_ckpt', type=int, default=1, help='save ckpt each n epochs')
-    parser.add_argument('--n_metrics', type=int, default=1, help='fid each n epochs')
-    #
+    parser.add_argument('--n_metrics', type=int, default=1, help='fid each n epochs')    #
     parser.add_argument('--n_stats', type=int, default=1, help='stats each n epochs')
+    parser.add_argument('--n_fid_samples', type=int, default=50000)
 
-    parser.add_argument('--n_fid_samples', type=int, default=50000) # TODO(nijkamp): we used 40,000 in short-run inference
-    # parser.add_argument('--n_fid_samples', type=int, default=1000)
 
     return parser.parse_args()
 
@@ -184,7 +150,7 @@ def update_job_result(job_opt, job_stats):
 
 def get_dataset(args):
 
-    fs_prefix = './' if not is_xsede() else '/pylon5/ac561ep/enijkamp/ebm_prior/'
+    fs_prefix = './'
 
     if args.dataset == 'svhn':
         import torchvision.transforms as transforms
@@ -206,13 +172,13 @@ def get_dataset(args):
 
         import torchvision.transforms as transforms
 
-        ds_train = torchvision.datasets.CelebA(fs_prefix + 'data/{}/train'.format(args.dataset), split='train', download=True,
+        ds_train = torchvision.datasets.CelebA(fs_prefix + 'data', split='train', download=True,
                                                     transform=transforms.Compose([
                                                         transforms.Resize(args.img_size),
                                                         transforms.CenterCrop(args.img_size),
                                                         transforms.ToTensor(),
                                                         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]))
-        ds_val = torchvision.datasets.CelebA(fs_prefix + 'data/{}/val'.format(args.dataset), split='valid', download=True,
+        ds_val = torchvision.datasets.CelebA(fs_prefix + 'data', split='valid', download=True,
                                                     transform=transforms.Compose([
                                                         transforms.Resize(args.img_size),
                                                         transforms.CenterCrop(args.img_size),
@@ -226,13 +192,13 @@ def get_dataset(args):
 
         import torchvision.transforms as transforms
 
-        ds_train = torchvision.datasets.CelebA(fs_prefix + 'data/{}/train'.format(args.dataset), split='train', download=True,
+        ds_train = torchvision.datasets.CelebA(fs_prefix + 'data', split='train', download=True,
                                                     transform=transforms.Compose([
                                                         transforms.Lambda(crop),
                                                         transforms.Resize(args.img_size),
                                                         transforms.ToTensor(),
                                                         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]))
-        ds_val = torchvision.datasets.CelebA(fs_prefix + 'data/{}/val'.format(args.dataset), split='valid', download=True,
+        ds_val = torchvision.datasets.CelebA(fs_prefix + 'data', split='valid', download=True,
                                                     transform=transforms.Compose([
                                                         transforms.Lambda(crop),
                                                         transforms.Resize(args.img_size),
@@ -326,14 +292,12 @@ def get_dataset(args):
 
 ##########################################################################################################
 
-def train(args_job, output_dir_job, output_dir, return_dict):
+def train(args, output_dir, path_check_point):
 
     #################################################
     ## preamble
 
-    args = parse_args()
-    args = pygrid.overwrite_opt(args, args_job)
-    args = to_named_dict(args)
+
 
     set_gpu(args.device)
     set_cuda(deterministic=args.gpu_deterministic)
@@ -375,7 +339,6 @@ def train(args_job, output_dir_job, output_dir, return_dict):
     netG.apply(weights_init_xavier)
     netF.apply(weights_init_xavier)
 
-
     netG = netG.to(device)
     netF = netF.to(device)
 
@@ -391,7 +354,6 @@ def train(args_job, output_dir_job, output_dir, return_dict):
         netF.train()
 
     mse = nn.MSELoss(reduction='sum')
-
     mse_mean = nn.MSELoss(reduction='mean')
 
     #################################################
@@ -423,17 +385,10 @@ def train(args_job, output_dir_job, output_dir, return_dict):
             prior_ll = -0.5 * (z1 ** 2)
             prior_ll = prior_ll.flatten(1).sum(-1) + np.log(2 * np.pi)
             ll = prior_ll + logdet
-            #f_log_lkhd = -ll.mean()
             f_log_lkhd = -ll.sum()
 
 
-
-            #log_p, logdet, _ = netF(z)
-            #logdet = logdet.mean()
-            #f_log_lkhd, _, _ = calc_loss(log_p, logdet, args.f_in_channel, n_bins=2.0 ** args.n_bits)
-
             z_grad_f = torch.autograd.grad(f_log_lkhd, z)[0]
-
             z.data = z.data - 0.5 * args.g_l_step_size * args.g_l_step_size * (z_grad_g + z_grad_f)
             if args.g_l_with_noise:
                 z.data += args.g_l_step_size * torch.randn_like(z).data
@@ -490,9 +445,23 @@ def train(args_job, output_dir_job, output_dir, return_dict):
 
     train_flag()
 
-    fid = 0.0
-    fid_best = math.inf
 
+    # resume the training (1) for fine-tuning or (2) because of failure
+    if path_check_point:
+        ckp = torch.load(path_check_point)
+        netG.load_state_dict(ckp['netG'])
+        netF.load_state_dict(ckp['netF'])
+        optG.load_state_dict(ckp['optG'])
+        optF.load_state_dict(ckp['optF'])
+        epoch_start=ckp['epoch']+1
+        print("We resume the training from the last epoch.")
+        fid_best = math.inf
+    else:
+        epoch_start=0
+        print("This is a new training.")
+        fid_best = math.inf
+
+    fid = 0.0
     z_fixed = sample_p_0()
     x_fixed = next(iter(dataloader_train))[0].to(device)
 
@@ -510,7 +479,7 @@ def train(args_job, output_dir_job, output_dir, return_dict):
     }
     interval = []
 
-    for epoch in range(args.n_epochs):
+    for epoch in range(epoch_start, args.n_epochs):
 
         for i, (x, y) in enumerate(dataloader_train, 0):
 
@@ -523,12 +492,9 @@ def train(args_job, output_dir_job, output_dir, return_dict):
             z_g_0 = sample_p_0(n=batch_size)
             z_f_0 = sample_p_0(n=batch_size)
 
-
             z_g_k, z_g_grad_norm, z_f_grad_norm = sample_langevin_post_z_with_flow(Variable(z_g_0), x, netG, netF, verbose=False)
 
-
             # Learn generator
-
             optG.zero_grad()
 
             x_hat = netG(z_g_k.detach())
@@ -543,7 +509,6 @@ def train(args_job, output_dir_job, output_dir, return_dict):
 
 
             # Learn prior flow
-
             optF.zero_grad()
 
             z1, logdet, _ = netF(torch.squeeze(z_g_k), objective=torch.zeros(int(z_g_k.shape[0])).to(device), init=False)
@@ -553,19 +518,9 @@ def train(args_job, output_dir_job, output_dir, return_dict):
             loss_f = -ll.mean()
             loss_f.backward()
 
-
-            # log_p, logdet, _ = netF(z_g_k.detach() + torch.rand_like(z_g_k) / 2.0 ** args.n_bits)
-            # logdet = logdet.mean()
-            # loss_f, _, _ = calc_loss(log_p, logdet, args.f_in_channel, n_bins=2.0 ** args.n_bits)
-            # loss_f = loss_f / batch_size
-            # loss_f.backward()
-            # #grad_norm_f = get_grad_norm(netF.parameters())
-
             if args.f_is_grad_clamp:
                  torch.nn.utils.clip_grad_norm_(netF.parameters(), args.f_max_norm)
             optF.step()
-            #if jj % 20 == 0:
-            #    logger.info('Train flow: loss_f={:8.3f}'.format(loss_f))
 
 
             # Printout
@@ -690,17 +645,17 @@ def train(args_job, output_dir_job, output_dir, return_dict):
             torch.save(save_dict, '{}/ckpt/ckpt_{:>06d}.pth'.format(output_dir, epoch))
 
         # Early exit
-        if epoch > 10 and loss_g > 300:
-            logger.info('early exit condition 1: epoch > 10 and loss_g > 300')
-            return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
-            return
+        # if epoch > 10 and loss_g > 300:
+        #     logger.info('early exit condition 1: epoch > 10 and loss_g > 300')
+        #     return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
+        #     return
 
         # if epoch > 40 and fid > 100:
         #     logger.info('early exit condition 2: epoch > 40 and fid > 100')
         #     return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
         #     return
 
-    return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
+    #return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
     logger.info('done')
 
 
@@ -773,20 +728,17 @@ def compute_fid_nchw(args, x_data, x_samples):
     return fid
 
 
-def test(args_job, output_dir, path_check_point):
+#################################################
+## test
+
+def test(args, output_dir, path_check_point):
 
     #################################################
     ## preamble
 
-    args = parse_args()
-    args = pygrid.overwrite_opt(args, args_job)
-    args = to_named_dict(args)
-
     set_gpu(args.device)
     set_cuda(deterministic=args.gpu_deterministic)
     set_seed(args.seed)
-
-    # makedirs_exp(output_dir)
 
     job_id = int(args['job_id'])
 
@@ -802,17 +754,12 @@ def test(args_job, output_dir, path_check_point):
     netG = _netG(args)
     netF = _netF(args, nz=args.nz)
 
-
     ckp=torch.load(path_check_point)
     netG.load_state_dict(ckp['netG'])
     netF.load_state_dict(ckp['netF'])
 
-
     netG = netG.to(device)
     netF = netF.to(device)
-
-    #logger.info(netG)
-    #logger.info(netF)
 
     def eval_flag():
         netG.eval()
@@ -822,10 +769,9 @@ def test(args_job, output_dir, path_check_point):
     #################################################
     ## test
 
-    n = 50000
+    n = args.n_fid_samples
 
     logger.info('computing fid with {} samples'.format(n))
-
 
     eval_flag()
     to_range_0_1 = lambda x: (x + 1.) / 2.
@@ -844,7 +790,8 @@ def test(args_job, output_dir, path_check_point):
     x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))]).numpy()
 
     ds_train, ds_test = get_dataset(args)
-    ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())
+    ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())    
+    
 
     fid = compute_fid_nchw(args, ds_fid, x_samples)
 
@@ -860,7 +807,10 @@ def test(args_job, output_dir, path_check_point):
         z = z.clone().detach()
         z.requires_grad = True
 
-        for i in range(args.g_l_steps):
+        g_l_steps_testing = args.g_l_steps * 20
+        g_l_step_size_testing = args.g_l_step_size
+
+        for i in range(g_l_steps_testing):
             x_hat = netG(z)
             g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * mse(x_hat, x) #/ x.shape[0]
             z_grad_g = torch.autograd.grad(g_log_lkhd, z)[0]
@@ -873,16 +823,15 @@ def test(args_job, output_dir, path_check_point):
             f_log_lkhd = -ll.sum()
 
 
-
             #log_p, logdet, _ = netF(z)
             #logdet = logdet.mean()
             #f_log_lkhd, _, _ = calc_loss(log_p, logdet, args.f_in_channel, n_bins=2.0 ** args.n_bits)
 
             z_grad_f = torch.autograd.grad(f_log_lkhd, z)[0]
 
-            z.data = z.data - 0.5 * args.g_l_step_size * args.g_l_step_size * (z_grad_g + z_grad_f)
-            if args.g_l_with_noise:
-                z.data += args.g_l_step_size * torch.randn_like(z).data
+            z.data = z.data - 0.5 * g_l_step_size_testing * g_l_step_size_testing * (z_grad_g + z_grad_f)
+            #if args.g_l_with_noise:
+            #    z.data += args.g_l_step_size * torch.randn_like(z).data
 
             z_grad_g_grad_norm = z_grad_g.view(args.batch_size, -1).norm(dim=1).mean()
             z_grad_f_grad_norm = z_grad_f.view(args.batch_size, -1).norm(dim=1).mean()
@@ -902,6 +851,7 @@ def test(args_job, output_dir, path_check_point):
         z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
         z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, verbose=False)[0]
         x_hat = netG(z_g_k.detach())
+        # x_hat = to_range_0_1(x_hat).clamp(min=0., max=1.)
         recon_error = recon_error + float(mse(x_hat, x).cpu().data.numpy()) / x.shape[0] / 3 / args.img_size / args.img_size
 
     recon_error = recon_error / (i + 1)
@@ -1061,13 +1011,19 @@ def main():
     copy_source(__file__, output_dir)
     opt = {'job_id': int(0), 'status': 'open', 'device': get_free_gpu()}
 
-    # training mode
-    #train(opt, output_dir, output_dir, {})
+    args = parse_args()
+    args = pygrid.overwrite_opt(args, opt)
+    args = to_named_dict(args)
 
-    # testing mode
-    path_check_point = '/home/kenny/extend/latent-space-flow-prior/output/train_svhn3/2021-07-24-03-48-20_fid=23.14/ckpt/ckpt_000160.pth'
 
-    test(opt, output_dir, path_check_point)
+    if args.train_mode:
+        # training mode
+        path_check_point = None#'/home/kenny/extend/latent-space-flow-prior/output/train_svhn3/2021-07-24-03-48-20_fid=23.14/ckpt/ckpt_000040.pth'
+        train(args, output_dir, path_check_point)
+    else:
+        # testing mode
+        path_check_point = '/home/kenny/extend/latent-space-flow-prior/output/train_svhn/2021-08-17-00-02-28/ckpt/ckpt_000071.pth'
+        test(args, output_dir, path_check_point)
 
 
 if __name__ == '__main__':

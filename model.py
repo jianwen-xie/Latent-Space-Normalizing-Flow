@@ -64,6 +64,7 @@ class _netG(nn.Module):
             nn.BatchNorm2d(args.ngf*2) if args.g_batchnorm else nn.Identity(),
             f,
 
+            # if the image size is of 64 x 64, uncomment this layer
             #nn.ConvTranspose2d(args.ngf*2, args.ngf*1, 4, 2, 1, bias = not args.g_batchnorm),
             #nn.BatchNorm2d(args.ngf*1) if args.g_batchnorm else nn.Identity(),
             #f,
@@ -297,13 +298,13 @@ class revnet2d(nn.Module):
     def __init__(self, hps, nz, *args, **kwargs):
         super(revnet2d, self).__init__(*args, **kwargs)
         self.hps = hps
-        self.revnet2d_step_s = nn.ModuleList([revnet2d_step(str(i), hps, nz=nz) for i in range(hps.depth)])
+        self.revnet2d_step_s = nn.ModuleList([revnet2d_step(str(i), hps, nz=nz) for i in range(hps.f_depth)])
     def forward(self, z, logdet, reverse=False, init=False):
         if not reverse:
-            for i in range(self.hps.depth):
+            for i in range(self.hps.f_depth):
                 z, logdet = self.revnet2d_step_s[i](z, logdet, reverse, init=init)
         else:
-            for i in reversed(range(self.hps.depth)):
+            for i in reversed(range(self.hps.f_depth)):
                 z, logdet = self.revnet2d_step_s[i](z, logdet, reverse, init=init)
 
         return z, logdet
@@ -313,11 +314,11 @@ class revnet2d_step(nn.Module):
         super(revnet2d_step, self).__init__(*args, **kwargs)
         self.actnorm = actnorm(nz=nz)
         self.hps = hps
-        if self.hps.flow_permutation == 1:
+        if self.hps.f_flow_permutation == 1:
             self.shuffle_features = shuffle_features(nz=nz)
             self.invertible_1x1_conv = None
-        elif self.hps.flow_permutation == 2:
-            self.invertible_1x1_conv = invertible_1x1_conv(hps.width, nz=nz)
+        elif self.hps.f_flow_permutation == 2:
+            self.invertible_1x1_conv = invertible_1x1_conv(hps.f_width, nz=nz)
             self.shuffle_features = None
         else:
             raise Exception()
@@ -325,10 +326,10 @@ class revnet2d_step(nn.Module):
         self.id = id
 
         assert nz % 2 == 0
-        if self.hps.flow_coupling == 0:
-            self.f = f(self.hps.width, nz//2, nz//2, name='f_' + self.id)
-        elif self.hps.flow_coupling == 1:
-            self.f = f(self.hps.width, nz//2, nz, name='f_' + self.id)
+        if self.hps.f_flow_coupling == 0:
+            self.f = f(self.hps.f_width, nz//2, nz//2, name='f_' + self.id)
+        elif self.hps.f_flow_coupling == 1:
+            self.f = f(self.hps.f_width, nz//2, nz, name='f_' + self.id)
 
     def forward(self, z, logdet, reverse, init):
         n_z = int_shape(z)[-1]
@@ -336,11 +337,11 @@ class revnet2d_step(nn.Module):
             z, logdet = self.actnorm(z, logdet=logdet, init=init)
             #print(logdet, logdet.shape)
 
-            if self.hps.flow_permutation == 0:
+            if self.hps.f_flow_permutation == 0:
                 z = reverse_features(z)
-            elif self.hps.flow_permutation == 1:
+            elif self.hps.f_flow_permutation == 1:
                 z = self.shuffle_features(z)
-            elif self.hps.flow_permutation == 2:
+            elif self.hps.f_flow_permutation == 2:
                 z, logdet = self.invertible_1x1_conv(z, logdet=logdet)
             else:
                 raise Exception()
@@ -348,9 +349,9 @@ class revnet2d_step(nn.Module):
             z1 = z[:, :n_z // 2]
             z2 = z[:, n_z // 2:]
 
-            if self.hps.flow_coupling == 0:
+            if self.hps.f_flow_coupling == 0:
                 z2 = z2 + self.f(z1, init=init)
-            elif self.hps.flow_coupling == 1:
+            elif self.hps.f_flow_coupling == 1:
                 h = self.f(z1, init=init)
                 shift = h[:, 0::2]
                 # scale = tf.exp(h[:, :, :, 1::2])
@@ -370,9 +371,9 @@ class revnet2d_step(nn.Module):
             z1 = z[:, :n_z // 2]
             z2 = z[:, n_z // 2:]
 
-            if self.hps.flow_coupling == 0:
+            if self.hps.f_flow_coupling == 0:
                 z2 -= self.f(z1, init=init)
-            elif self.hps.flow_coupling == 1:
+            elif self.hps.f_flow_coupling == 1:
                 h = self.f(z1, init=init)
                 shift = h[:, 0::2]
                 # scale = tf.exp(h[:, :, :, 1::2])
@@ -388,11 +389,11 @@ class revnet2d_step(nn.Module):
 
             z = torch.cat([z1, z2], 1)
 
-            if self.hps.flow_permutation == 0:
+            if self.hps.f_flow_permutation == 0:
                 z = reverse_features(z, reverse=True)
-            elif self.hps.flow_permutation == 1:
+            elif self.hps.f_flow_permutation == 1:
                 z = self.shuffle_features(z, reverse=True)
-            elif self.hps.flow_permutation == 2:
+            elif self.hps.f_flow_permutation == 2:
                 z, logdet = self.invertible_1x1_conv(z, logdet, reverse=True)
             else:
                 raise Exception()
@@ -406,9 +407,9 @@ class _netF(nn.Module):
         super(_netF, self).__init__(*args, **kwargs)
         revnet2d_s = []
         self.hps = hps
-        for i in range(hps.n_levels):
+        for i in range(hps.f_n_levels):
             revnet2d_s.append(revnet2d(hps, nz=nz))
-            if i < hps.n_levels - 1:
+            if i < hps.f_n_levels - 1:
                 # self.split2d_s.append(split2d(hps)
                 # should implement the split layer in the future
                 raise NotImplementedError
@@ -417,19 +418,19 @@ class _netF(nn.Module):
     def forward(self, z, objective, init=False, reverse=False, eps=None, eps_std=None, z2_s=None, return_obj=False):
         if not reverse:
             eps_forward = []
-            for i in range(self.hps.n_levels):
+            for i in range(self.hps.f_n_levels):
                 # _print('codec->z_{}'.format(i), np.array(z[0][0][0]))
                 z, objective = self.revnet2d_s[i](z, objective, init=init)
-                if i < self.hps.n_levels - 1:
+                if i < self.hps.f_n_levels - 1:
                     # _print('codec->split2d', np.array(z[0][0][0]))
                     z, objective, _eps = self.split2d_s[i](z, objective=objective)
                     eps_forward.append(_eps)
             return z, objective, eps_forward
         else:
-            eps = eps if eps else [None] * self.hps.n_levels
-            for i in reversed(range(self.hps.n_levels)):
+            eps = eps if eps else [None] * self.hps.f_n_levels
+            for i in reversed(range(self.hps.f_n_levels)):
                 # print(i, 'z', z.shape)
-                if i < self.hps.n_levels - 1:
+                if i < self.hps.f_n_levels - 1:
                     # z, objective = self.split2d_reverse_s[i](z, objective=objective, eps=eps[i], eps_std=eps_std, z2=z2_s[i] if z2_s else None)
                     z, objective = self.split2d_s[i](z, reverse=True, objective=objective, eps=eps[i], eps_std=eps_std,
                                                      z2=z2_s[i] if z2_s else None)
@@ -440,8 +441,6 @@ class _netF(nn.Module):
                 return z
             else:
                 return z, -objective
-
-
 
 
 class _netF2(nn.Module):
