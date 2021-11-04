@@ -232,7 +232,7 @@ def check_or_download_inception(inception_path):
 #         fid_value = calculate_frechet_distance(m1, s1, m2, s2)
 #         return fid_value
 
-def fid_score(create_session, data, samples, path='/tmp', cpu_only=False):
+def fid_score(create_session, data, samples, path='.', cpu_only=False):
 
     with create_session() as sess:
         if cpu_only:
@@ -246,8 +246,9 @@ def fid_score(create_session, data, samples, path='/tmp', cpu_only=False):
                 fid_value = calculate_frechet_distance(m1, s1, m2, s2)
                 return fid_value
         else:
-            inception_path = check_or_download_inception(path)
-            create_inception_graph(str(inception_path))
+            # inception_path = check_or_download_inception(path)
+            # create_inception_graph(str(inception_path))
+            create_inception_graph("data/classify_image_graph_def.pb")
             data = data
             samples = samples
             m1, s1 = calculate_activation_statistics(data, sess)

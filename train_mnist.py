@@ -38,6 +38,46 @@ from tqdm import tqdm
 
 class _netG(nn.Module):
     def __init__(self, args):
+        super(_netG, self).__init__()
+        self.dim_c = 1
+        self.dim_z = args.nz
+        self.width = 28
+        self.height = 28
+
+        self.block10 = nn.Sequential(
+            nn.Linear(self.dim_z, 1024),
+            nn.BatchNorm1d(1024),
+            nn.ReLU(True),
+        )
+        self.block11 = nn.Sequential(
+            nn.Linear(1024, 128 * self.width//4 * self.height//4),
+            nn.BatchNorm1d(128 * self.width//4 * self.height//4),
+            nn.ReLU(True),
+        )
+        self.block12 = nn.Sequential(
+            nn.ConvTranspose2d(128, 64, 2, stride=2),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+        )
+        self.block13 = nn.Sequential(
+            nn.ConvTranspose2d(64, self.dim_c, 2, stride=2),
+            nn.Tanh(),
+        )
+
+    def decoder(self, x):
+        h = self.block10(x)
+        h = self.block11(h)
+        h = h.view(h.shape[0], 128, self.width//4, self.height//4)
+        h = self.block12(h)
+        h = self.block13(h)
+        return h
+
+    def forward(self, z):
+        x = self.decoder(z.squeeze())
+        return x
+
+class _netG_svhn(nn.Module):
+    def __init__(self, args):
         super().__init__()
 
         f = get_activation(args.g_activation, args)
@@ -76,13 +116,15 @@ def parse_args():
 
     parser.add_argument('--mode', type=str, default="train", help='training or test mode')
     parser.add_argument('--abnormal', type=int, default=-1, help='training or test mode')
+    parser.add_argument('--device', type=int, default=0, help='training or test mode')
+    parser.add_argument('--output_dir', type=str, default="default", help='training or test mode')
     parser.add_argument('--load_checkpoint', type=str, default="", help='load checkpoint')
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
     parser.add_argument('--dataset', type=str, default='mnist', choices=['svhn', 'celeba', 'celeba_crop'])
-    parser.add_argument('--img_size', default=32, type=int)
+    parser.add_argument('--img_size', default=28, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
-    parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
+    parser.add_argument('--nz', type=int, default=20, help='size of the latent z vector')
     parser.add_argument('--nc', default=1)
     parser.add_argument('--ngf', default=64, help='feature dimensions of generator')
 
@@ -121,14 +163,14 @@ def parse_args():
     parser.add_argument('--f_beta1', default=0.5, type=float)
     parser.add_argument('--f_beta2', default=0.999, type=float)
 
-    parser.add_argument('--n_epochs', type=int, default=11, help='number of epochs to train for')
+    parser.add_argument('--n_epochs', type=int, default=21, help='number of epochs to train for')
     parser.add_argument('--n_printout', type=int, default=20, help='printout each n iterations')
     parser.add_argument('--n_plot', type=int, default=1, help='plot each n epochs')
 
     parser.add_argument('--n_ckpt', type=int, default=1, help='save ckpt each n epochs')
     parser.add_argument('--n_metrics', type=int, default=1, help='fid each n epochs')    #
     parser.add_argument('--n_stats', type=int, default=1, help='stats each n epochs')
-    parser.add_argument('--n_fid_samples', type=int, default=50000)
+    parser.add_argument('--n_fid_samples', type=int, default=5000)
 
 
     return parser.parse_args()
@@ -357,8 +399,8 @@ def train(args, output_dir, path_check_point):
     ## preamble
 
 
-
-    set_gpu(args.device)
+    if args.device > 0:
+        set_gpu(args.device)
     set_cuda(deterministic=args.gpu_deterministic)
     set_seed(args.seed)
 
@@ -378,7 +420,7 @@ def train(args, output_dir, path_check_point):
     logger.info('len(ds_train)={}'.format(len(ds_train)))
     logger.info('len(ds_val)={}'.format(len(ds_val)))
 
-    dataloader_train = torch.utils.data.DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    dataloader_train = torch.utils.data.DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=True)
     dataloader_val = torch.utils.data.DataLoader(ds_val, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
     assert len(ds_train) >= args.n_fid_samples
@@ -646,12 +688,12 @@ def train(args, output_dir, path_check_point):
         #     plot_stats(output_dir, stats, interval)
 
         # Metrics
-        # if epoch == args.n_epochs or epoch % args.n_metrics == 0:
+        if epoch == args.n_epochs or epoch % args.n_metrics == 0:
 
-        #     fid = get_fid(n=args.n_fid_samples)
-        #     if fid < fid_best:
-        #         fid_best = fid
-        #     logger.info('fid={}'.format(fid))
+            fid = get_fid(n=args.n_fid_samples)
+            if fid < fid_best:
+                fid_best = fid
+            logger.info('fid={}'.format(fid))
 
         # Plot
         # if epoch % args.n_plot == 0:
@@ -768,7 +810,7 @@ def compute_fid(args, x_data, x_samples, use_cpu=False):
             config.gpu_options.visible_device_list = str(args.device)
             return tf.Session(config=config)
 
-    path = '/tmp' if not is_xsede() else '/pylon5/ac561ep/enijkamp/inception'
+    path = 'data'
 
     fid = fid_score(create_session, x_data, x_samples, path, cpu_only=use_cpu)
 
@@ -780,6 +822,10 @@ def compute_fid_nchw(args, x_data, x_samples):
 
     x_data_nhwc = to_nhwc(255 * x_data)
     x_samples_nhwc = to_nhwc(255 * x_samples)
+    if x_data_nhwc.shape[-1] == 1: 
+        x_data_nhwc = x_data_nhwc.repeat(3, -1)
+    if x_samples_nhwc.shape[-1] == 1: 
+        x_samples_nhwc = x_samples_nhwc.repeat(3, -1)
 
     fid = compute_fid(args, x_data_nhwc, x_samples_nhwc)
 
@@ -891,7 +937,7 @@ def test(args, output_dir, path_check_point):
     import matplotlib.pyplot as plt 
 
     Y_hat, Y, rec_errors = [], [], []
-    print('anomaly detection starts')
+    print('anomaly detection starts for %i' % args.abnormal)
     for i, (x, y) in tqdm(enumerate(dataloader_test, 0)):
         x = x.to(device)
         z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
@@ -903,16 +949,19 @@ def test(args, output_dir, path_check_point):
         if args.abnormal is not None: 
             g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * torch.sum(torch.pow(x - x_hat, 2), (3,2,1))
             f_log_lkhd = -((-0.5 * (z1 ** 2)).flatten(1).sum(-1) + np.log(2 * np.pi) + logdet)
-            Y_hat.append(- g_log_lkhd - f_log_lkhd)
+            Y_hat.append(g_log_lkhd + f_log_lkhd)
             Y.append(y) 
 
     if args.abnormal != -1: 
+        Y_raw = Y
         Y = np.concatenate([y.cpu().data.numpy() for y in Y]) == args.abnormal 
         print("[%d / %d] abnormal used." % (Y.sum(), len(Y)))
         Y_hat = np.concatenate([y.cpu().data.numpy() for y in Y_hat])
         precision, recall, thresholds = precision_recall_curve(Y, Y_hat)
         auc_ = auc(recall, precision)
         print("AUC = ", auc_, np.sum(Y))
+        plt.plot(recall, precision)
+        plt.savefig("output/abnormal_%s_auc.png" % args.abnormal)
     
     recon_error = float(torch.sum(torch.stack(rec_errors)).cpu().data.numpy()) / len(ds_test) / 3 / args.img_size / args.img_size
     print('reconstruction error={}'.format(recon_error))
@@ -1055,16 +1104,15 @@ def makedirs_exp(output_dir):
 def main():
 
     # print_gpus()
-
-    fs_prefix = './' 
-    exp_id = get_exp_id(__file__)
-    opt = {'job_id': int(0), 'status': 'open', 'device': get_free_gpu()}
-    output_dir = pygrid.get_output_dir(exp_id, fs_prefix=fs_prefix)
-
+    opt = {'job_id': int(0), 'status': 'open'}
     args = parse_args()
     args = pygrid.overwrite_opt(args, opt)
     args = to_named_dict(args)
     path_check_point = None if args.load_checkpoint == "" else args.load_checkpoint
+
+    output_dir = pygrid.get_output_dir(get_exp_id(__file__), fs_prefix='./') if args.output_dir == "default" else ("output/train_mnist/" + args.output_dir)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     if args.mode == "train":
         # training mode
