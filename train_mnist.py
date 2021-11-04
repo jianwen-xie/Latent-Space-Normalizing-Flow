@@ -31,7 +31,40 @@ import torchvision.transforms as transforms
 
 import pygrid
 
-from model import _netG, _netF, weights_init_xavier
+from model import get_activation, _netF, weights_init_xavier
+
+# Model 
+
+class _netG(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+
+        f = get_activation(args.g_activation, args)
+
+        self.gen = nn.Sequential(
+            nn.ConvTranspose2d(args.nz, args.ngf*8, 4, 1, 0, bias = not args.g_batchnorm),
+            nn.BatchNorm2d(args.ngf*8) if args.g_batchnorm else nn.Identity(),
+            f,
+
+            nn.ConvTranspose2d(args.ngf*8, args.ngf*4, 4, 2, 1, bias = not args.g_batchnorm),
+            nn.BatchNorm2d(args.ngf*4) if args.g_batchnorm else nn.Identity(),
+            f,
+
+            nn.ConvTranspose2d(args.ngf*4, args.ngf*2, 4, 2, 1, bias = not args.g_batchnorm),
+            nn.BatchNorm2d(args.ngf*2) if args.g_batchnorm else nn.Identity(),
+            f,
+
+            # if the image size is of 64 x 64, uncomment this layer
+            #nn.ConvTranspose2d(args.ngf*2, args.ngf*1, 4, 2, 1, bias = not args.g_batchnorm),
+            #nn.BatchNorm2d(args.ngf*1) if args.g_batchnorm else nn.Identity(),
+            #f,
+
+            nn.ConvTranspose2d(args.ngf*2, args.nc, 4, 2, 1),
+            nn.Tanh()
+        )
+
+    def forward(self, z):
+        return self.gen(z)
 
 ##########################################################################################################
 ## Parameters
@@ -40,14 +73,16 @@ def parse_args():
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--train_mode', type=bool, default=True, help='training or test mode')
+    parser.add_argument('--mode', type=str, default="train", help='training or test mode')
+    parser.add_argument('--abnormal', type=int, default=-1, help='training or test mode')
+    parser.add_argument('--load_checkpoint', type=str, default="", help='load checkpoint')
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
-    parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'celeba', 'celeba_crop'])
+    parser.add_argument('--dataset', type=str, default='mnist', choices=['svhn', 'celeba', 'celeba_crop'])
     parser.add_argument('--img_size', default=32, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
     parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
-    parser.add_argument('--nc', default=3)
+    parser.add_argument('--nc', default=1)
     parser.add_argument('--ngf', default=64, help='feature dimensions of generator')
 
     parser.add_argument('--g_llhd_sigma', type=float, default=0.3, help='prior of factor analysis')
@@ -85,7 +120,7 @@ def parse_args():
     parser.add_argument('--f_beta1', default=0.5, type=float)
     parser.add_argument('--f_beta2', default=0.999, type=float)
 
-    parser.add_argument('--n_epochs', type=int, default=201, help='number of epochs to train for')
+    parser.add_argument('--n_epochs', type=int, default=11, help='number of epochs to train for')
     parser.add_argument('--n_printout', type=int, default=20, help='printout each n iterations')
     parser.add_argument('--n_plot', type=int, default=1, help='plot each n epochs')
 
@@ -96,7 +131,6 @@ def parse_args():
 
 
     return parser.parse_args()
-
 
 def create_args_grid():
     # TODO add your enumeration of parameters here
@@ -140,7 +174,6 @@ def create_args_grid():
 
     return opt_list
 
-
 def update_job_result(job_opt, job_stats):
     # TODO add your result metric here
     job_opt['fid_best'] = job_stats['fid_best']
@@ -154,6 +187,28 @@ def update_job_result(job_opt, job_stats):
 def get_dataset(args):
 
     fs_prefix = './'
+
+    if args.dataset == 'mnist':
+        import torchvision.transforms as transforms
+        ds_train = torchvision.datasets.MNIST(fs_prefix + 'data/{}'.format(args.dataset), download=True,
+                                             transform=transforms.Compose([
+                                             transforms.Resize(args.img_size),
+                                             transforms.ToTensor(),
+                                             transforms.Normalize(0.5, 0.5),
+                               ]))
+        if args.abnormal != -1: 
+            Y = [y for (x, y) in ds_train]
+            selection = [i for i, y in enumerate(Y) if y != args.abnormal]
+            ds_train = torch.utils.data.Subset(ds_train, selection)
+        ds_val = torchvision.datasets.MNIST(fs_prefix + 'data/{}'.format(args.dataset), download=True, train=False,
+                                             transform=transforms.Compose([
+                                             transforms.Resize(args.img_size),
+                                             transforms.ToTensor(),
+                                             transforms.Normalize(0.5, 0.5),
+                               ]))
+        return ds_train, ds_val
+
+
 
     if args.dataset == 'svhn':
         import torchvision.transforms as transforms
@@ -323,7 +378,7 @@ def train(args, output_dir, path_check_point):
     logger.info('len(ds_val)={}'.format(len(ds_val)))
 
     dataloader_train = torch.utils.data.DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    # dataloader_val = torch.utils.data.DataLoader(ds_val, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    dataloader_val = torch.utils.data.DataLoader(ds_val, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
     assert len(ds_train) >= args.n_fid_samples
     to_range_0_1 = lambda x: (x + 1.) / 2.
@@ -590,12 +645,12 @@ def train(args, output_dir, path_check_point):
         #     plot_stats(output_dir, stats, interval)
 
         # Metrics
-        if epoch == args.n_epochs or epoch % args.n_metrics == 0:
+        # if epoch == args.n_epochs or epoch % args.n_metrics == 0:
 
-            fid = get_fid(n=args.n_fid_samples)
-            if fid < fid_best:
-                fid_best = fid
-            logger.info('fid={}'.format(fid))
+        #     fid = get_fid(n=args.n_fid_samples)
+        #     if fid < fid_best:
+        #         fid_best = fid
+        #     logger.info('fid={}'.format(fid))
 
         # Plot
         # if epoch % args.n_plot == 0:
@@ -666,6 +721,7 @@ def train(args, output_dir, path_check_point):
 ##########################################################################################################
 ## Metrics
 
+
 def is_xsede():
     import socket
     return 'psc' in socket.gethostname()
@@ -732,6 +788,7 @@ def compute_fid_nchw(args, x_data, x_samples):
 #################################################
 ## test
 
+# AUC anormaly detection added by Jerry
 def test(args, output_dir, path_check_point):
 
     #################################################
@@ -755,7 +812,7 @@ def test(args, output_dir, path_check_point):
     netG = _netG(args)
     netF = _netF(args, nz=args.nz)
 
-    ckp=torch.load(path_check_point)
+    ckp = torch.load(path_check_point)
     netG.load_state_dict(ckp['netG'])
     netF.load_state_dict(ckp['netF'])
 
@@ -770,35 +827,24 @@ def test(args, output_dir, path_check_point):
     #################################################
     ## test
 
-    n = args.n_fid_samples
-
-    logger.info('computing fid with {} samples'.format(n))
-
-    eval_flag()
-    to_range_0_1 = lambda x: (x + 1.) / 2.
-
-    def sample_x():
-
-        z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
-        z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device),
-                     reverse=True, return_obj=False)
-
-        x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
-        x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
-
-        return x_samples
-
-    x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))]).numpy()
-
     ds_train, ds_test = get_dataset(args)
-    ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())    
-    
 
-    fid = compute_fid_nchw(args, ds_fid, x_samples)
+    # n = args.n_fid_samples
+    # logger.info('computing fid with {} samples'.format(n))
+    # eval_flag()
+    # to_range_0_1 = lambda x: (x + 1.) / 2.
+    # def sample_x():
 
-    logger.info('fid={}'.format(fid))
-
-
+    #     z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
+    #     z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(
+    #         int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
+    #     x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+    #     x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+    #     return x_samples
+    # x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))]).numpy()
+    # ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())    
+    # fid = compute_fid_nchw(args, ds_fid, x_samples)
+    # logger.info('fid={}'.format(fid))
 
     dataloader_test = torch.utils.data.DataLoader(ds_test, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
@@ -843,25 +889,34 @@ def test(args, output_dir, path_check_point):
 
         return z.detach(), z_grad_g_grad_norm, z_grad_f_grad_norm
 
+    from sklearn.metrics import precision_recall_curve, auc
 
-    recon_error = 0
+    Y_hat, Y, rec_errors = [], [], []
+    logger.info('anomaly detection starts')
     for i, (x, y) in enumerate(dataloader_test, 0):
-
         x = x.to(device)
-
         z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
         z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, verbose=False)[0]
         x_hat = netG(z_g_k.detach())
+        z1, logdet, _ = netF(torch.squeeze(z_g_k), objective=torch.zeros(int(z_g_k.shape[0])).to(device), init=False)
         # x_hat = to_range_0_1(x_hat).clamp(min=0., max=1.)
-        recon_error = recon_error + float(mse(x_hat, x).cpu().data.numpy()) / x.shape[0] / 3 / args.img_size / args.img_size
+        rec_errors.append(mse(x_hat, x))
+        if args.abnormal is not None: 
+            g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * torch.sum(torch.pow(x - x_hat, 2), (3,2,1))
+            f_log_lkhd = -((-0.5 * (z1 ** 2)).flatten(1).sum(-1) + np.log(2 * np.pi) + logdet)
+            Y_hat.append(g_log_lkhd + f_log_lkhd)
+            Y.append(y) 
 
-    recon_error = recon_error / (i + 1)
+    if args.abnormal != -1: 
+        Y = np.concatenate([y.cpu().data.numpy() for y in Y]) == args.abnormal 
+        print("[%d / %d] abnormal used." % (Y.sum(), len(Y)))
+        Y_hat = np.concatenate([y.cpu().data.numpy() for y in Y_hat])
+        precision, recall, thresholds = precision_recall_curve(Y, Y_hat)
+        auc_ = auc(recall, precision)
+        print("AUC = ", auc_, np.sum(Y))
+    
+    recon_error = float(torch.sum(torch.stack(rec_errors)).cpu().data.numpy()) / len(ds_test) / 3 / args.img_size / args.img_size
     logger.info('reconstruction error={}'.format(recon_error))
-
-
-
-
-
 
 ##########################################################################################################
 ## Plots
@@ -1015,15 +1070,13 @@ def main():
     args = parse_args()
     args = pygrid.overwrite_opt(args, opt)
     args = to_named_dict(args)
+    path_check_point = None if args.load_checkpoint == "" else args.load_checkpoint
 
-
-    if args.train_mode:
+    if args.mode == "train":
         # training mode
-        path_check_point = None#'/home/kenny/extend/latent-space-flow-prior/output/train_svhn3/2021-07-24-03-48-20_fid=23.14/ckpt/ckpt_000040.pth'
         train(args, output_dir, path_check_point)
-    else:
+    elif args.mode == "test":
         # testing mode
-        path_check_point = '/home/kenny/extend/latent-space-flow-prior/output/train_svhn/2021-08-17-00-02-28/ckpt/ckpt_000071.pth'
         test(args, output_dir, path_check_point)
 
 
