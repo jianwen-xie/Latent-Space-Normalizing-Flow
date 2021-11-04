@@ -32,6 +32,7 @@ import torchvision.transforms as transforms
 import pygrid
 
 from model import get_activation, _netF, weights_init_xavier
+from tqdm import tqdm
 
 # Model 
 
@@ -800,9 +801,6 @@ def test(args, output_dir, path_check_point):
 
     job_id = int(args['job_id'])
 
-    logger = setup_logging('job{}'.format(job_id), output_dir, console=True)
-    #logger.info(args)
-
     device = torch.device('cuda:{}'.format(args.device) if torch.cuda.is_available() else 'cpu')
 
 
@@ -890,10 +888,11 @@ def test(args, output_dir, path_check_point):
         return z.detach(), z_grad_g_grad_norm, z_grad_f_grad_norm
 
     from sklearn.metrics import precision_recall_curve, auc
+    import matplotlib.pyplot as plt 
 
     Y_hat, Y, rec_errors = [], [], []
-    logger.info('anomaly detection starts')
-    for i, (x, y) in enumerate(dataloader_test, 0):
+    print('anomaly detection starts')
+    for i, (x, y) in tqdm(enumerate(dataloader_test, 0)):
         x = x.to(device)
         z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
         z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, verbose=False)[0]
@@ -904,7 +903,7 @@ def test(args, output_dir, path_check_point):
         if args.abnormal is not None: 
             g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * torch.sum(torch.pow(x - x_hat, 2), (3,2,1))
             f_log_lkhd = -((-0.5 * (z1 ** 2)).flatten(1).sum(-1) + np.log(2 * np.pi) + logdet)
-            Y_hat.append(g_log_lkhd + f_log_lkhd)
+            Y_hat.append(- g_log_lkhd - f_log_lkhd)
             Y.append(y) 
 
     if args.abnormal != -1: 
@@ -916,7 +915,7 @@ def test(args, output_dir, path_check_point):
         print("AUC = ", auc_, np.sum(Y))
     
     recon_error = float(torch.sum(torch.stack(rec_errors)).cpu().data.numpy()) / len(ds_test) / 3 / args.img_size / args.img_size
-    logger.info('reconstruction error={}'.format(recon_error))
+    print('reconstruction error={}'.format(recon_error))
 
 ##########################################################################################################
 ## Plots
@@ -1058,14 +1057,9 @@ def main():
     # print_gpus()
 
     fs_prefix = './' 
-
-    # preamble
     exp_id = get_exp_id(__file__)
-    output_dir = pygrid.get_output_dir(exp_id, fs_prefix=fs_prefix)
-
-    # run
-    copy_source(__file__, output_dir)
     opt = {'job_id': int(0), 'status': 'open', 'device': get_free_gpu()}
+    output_dir = pygrid.get_output_dir(exp_id, fs_prefix=fs_prefix)
 
     args = parse_args()
     args = pygrid.overwrite_opt(args, opt)
@@ -1074,6 +1068,7 @@ def main():
 
     if args.mode == "train":
         # training mode
+        copy_source(__file__, output_dir)
         train(args, output_dir, path_check_point)
     elif args.mode == "test":
         # testing mode
