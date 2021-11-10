@@ -16,7 +16,7 @@ from math import log, pi, exp
 import numpy as np
 
 # I do not know why it must load before "import torchvision"
-from fid_v2_tf_cpu import fid_score
+# from fid_v2_tf_cpu import fid_score
 
 import torch
 from torch import cuda
@@ -28,10 +28,12 @@ import torch.nn.utils.spectral_norm as sn
 
 import torchvision
 import torchvision.transforms as transforms
+from torch.utils.tensorboard import SummaryWriter
 
 import pygrid
 
 from model import _netG, _netF, weights_init_xavier
+import pytorch_fid_wrapper as pfw
 
 ##########################################################################################################
 ## Parameters
@@ -43,6 +45,8 @@ def parse_args():
     parser.add_argument('--train_mode', type=bool, default=True, help='training or test mode')
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
+    parser.add_argument('--device', type=int, default=0, help='training or test mode')
+    parser.add_argument('--output_dir', type=str, default="default", help='training or test mode')
     parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'celeba', 'celeba_crop'])
     parser.add_argument('--img_size', default=32, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
@@ -295,21 +299,30 @@ def get_dataset(args):
 
 ##########################################################################################################
 
+class Fid_calculator(object):
+
+    def __init__(self, args, training_data):
+        pfw.set_config(batch_size=args.batch_size, device=args.device)
+        training_data = training_data.repeat(1,3 if training_data.shape[1] == 1 else 1,1,1)
+        print("precalculate FID distribution for training data...")
+        self.real_m, self.real_s = pfw.get_stats(training_data)
+
+    def fid(self, data): 
+        data = data.repeat(1,3 if data.shape[1] == 1 else 1,1,1) 
+        return pfw.fid(data, real_m=self.real_m, real_s=self.real_s)
+
+
 def train(args, output_dir, path_check_point):
 
     #################################################
     ## preamble
 
-
-
     set_gpu(args.device)
     set_cuda(deterministic=args.gpu_deterministic)
     set_seed(args.seed)
-
     makedirs_exp(output_dir)
-
+    tb_writer = SummaryWriter(log_dir=output_dir)
     job_id = int(args['job_id'])
-
     logger = setup_logging('job{}'.format(job_id), output_dir, console=True)
     logger.info(args)
 
@@ -327,8 +340,8 @@ def train(args, output_dir, path_check_point):
 
     assert len(ds_train) >= args.n_fid_samples
     to_range_0_1 = lambda x: (x + 1.) / 2.
-    ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())
-    logger.info('ds_fid.shape={}'.format(ds_fid.shape))
+    ds_fid = torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu()
+    fid_calculator = Fid_calculator(args, ds_fid)
 
     def plot(p, x):
         return torchvision.utils.save_image(torch.clamp(x, -1., 1.), p, normalize=True, nrow=int(np.sqrt(args.batch_size)))
@@ -404,44 +417,6 @@ def train(args, output_dir, path_check_point):
 
 
         return z.detach(), z_grad_g_grad_norm, z_grad_f_grad_norm
-
-    #################################################
-    ## fid
-
-    def get_fid(n):
-
-        assert n <= ds_fid.shape[0]
-
-        logger.info('computing fid with {} samples'.format(n))
-
-        try:
-            eval_flag()
-
-            def sample_x():
-
-                z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
-                z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device),
-                             reverse=True, return_obj=False)
-
-                x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
-                x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
-
-                return x_samples
-
-            x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))]).numpy()
-            fid = compute_fid_nchw(args, ds_fid, x_samples)
-            return fid
-
-        except Exception as e:
-            print(e)
-            logger.critical(e, exc_info=True)
-            logger.info('FID failed')
-
-        finally:
-            train_flag()
-
-
-
 
     #################################################
     ## train
@@ -569,6 +544,15 @@ def train(args, output_dir, path_check_point):
                         'fid={:8.2f}, '.format(fid) +
                         'fid_best={:8.2f}'.format(fid_best))
 
+                    num_step = epoch*len(dataloader_train)+i
+                    tb_writer.add_scalar("train/grad_norm_g", grad_norm_g, num_step)
+                    tb_writer.add_scalar("train/loss_g", loss_g, num_step)
+                    tb_writer.add_scalar("train/loss_f", loss_f, num_step)
+                    tb_writer.add_scalar("train/z_g_grad_norm", z_g_grad_norm, num_step)
+                    tb_writer.add_scalar("train/z_f_grad_norm", z_f_grad_norm, num_step)
+                    tb_writer.add_scalar("train/posterior_moments", posterior_moments, num_step)
+                    tb_writer.add_scalar("train/fid_best", fid_best, num_step)
+
         # Schedule
         # lr_scheduleE.step(epoch=epoch)
         lr_scheduleG.step(epoch=epoch)
@@ -592,10 +576,30 @@ def train(args, output_dir, path_check_point):
         # Metrics
         if epoch == args.n_epochs or epoch % args.n_metrics == 0:
 
-            fid = get_fid(n=args.n_fid_samples)
+            try:
+                eval_flag()
+                def sample_x():
+                    z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
+                    z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
+                    x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+                    x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+                    return x_samples
+                x_samples = torch.cat([sample_x() for _ in range(int(args.n_fid_samples / args.batch_size))])
+                fid = fid_calculator.fid(x_samples)
+
+            except Exception as e:
+                print(e)
+                logger.critical(e, exc_info=True)
+                logger.info('FID failed')
+                fid = 10000
+
+            finally:
+                train_flag()
+
             if fid < fid_best:
                 fid_best = fid
             logger.info('fid={}'.format(fid))
+            tb_writer.add_scalar("train/fid", fid, epoch)
 
         # Plot
         # if epoch % args.n_plot == 0:
@@ -1010,12 +1014,14 @@ def main():
 
     # run
     copy_source(__file__, output_dir)
-    opt = {'job_id': int(0), 'status': 'open', 'device': get_free_gpu()}
+    opt = {'job_id': int(0), 'status': 'open'}
 
     args = parse_args()
     args = pygrid.overwrite_opt(args, opt)
     args = to_named_dict(args)
-
+    output_dir = pygrid.get_output_dir(get_exp_id(__file__), fs_prefix='./') if args.output_dir == "default" else ("output/train_mnist/" + args.output_dir)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     if args.train_mode:
         # training mode

@@ -299,15 +299,19 @@ class revnet2d(nn.Module):
         super(revnet2d, self).__init__(*args, **kwargs)
         self.hps = hps
         self.revnet2d_step_s = nn.ModuleList([revnet2d_step(str(i), hps, nz=nz) for i in range(hps.f_depth)])
-    def forward(self, z, logdet, reverse=False, init=False):
+    def forward(self, z, logdet, reverse=False, init=False, return_all=False):
+        z_all = [] if return_all else None
         if not reverse:
             for i in range(self.hps.f_depth):
                 z, logdet = self.revnet2d_step_s[i](z, logdet, reverse, init=init)
+                if return_all:
+                    z_all.append(z)
         else:
             for i in reversed(range(self.hps.f_depth)):
                 z, logdet = self.revnet2d_step_s[i](z, logdet, reverse, init=init)
-
-        return z, logdet
+                if return_all:
+                    z_all.append(z)
+        return z_all if return_all else z, logdet
 
 class revnet2d_step(nn.Module):
     def __init__(self, id, hps, nz, *args, **kwargs):
@@ -415,17 +419,26 @@ class _netF(nn.Module):
                 raise NotImplementedError
         self.revnet2d_s = nn.ModuleList(revnet2d_s)
 
-    def forward(self, z, objective, init=False, reverse=False, eps=None, eps_std=None, z2_s=None, return_obj=False):
+    # forward pass: infer the z from given postrior.
+    # reverse pass: from normal z to flowed z.
+    def forward(self, z, objective, init=False, reverse=False, eps=None, eps_std=None, z2_s=None, return_obj=False, return_all=False):
+        z_all = [] if return_all else None
         if not reverse:
             eps_forward = []
             for i in range(self.hps.f_n_levels):
                 # _print('codec->z_{}'.format(i), np.array(z[0][0][0]))
-                z, objective = self.revnet2d_s[i](z, objective, init=init)
+                z, objective = self.revnet2d_s[i](z, objective, init=init, return_all=return_all)
+                if return_all: 
+                    z_all = z_all + z
+                    z = z[-1]
                 if i < self.hps.f_n_levels - 1:
                     # _print('codec->split2d', np.array(z[0][0][0]))
-                    z, objective, _eps = self.split2d_s[i](z, objective=objective)
+                    z, objective, _eps = self.split2d_s[i](z, objective=objective, return_all=return_all)
+                    if return_all: 
+                        z_all = z_all + z
+                        z = z[-1]
                     eps_forward.append(_eps)
-            return z, objective, eps_forward
+            return z_all if return_all else z, objective, eps_forward
         else:
             eps = eps if eps else [None] * self.hps.f_n_levels
             for i in reversed(range(self.hps.f_n_levels)):
@@ -435,13 +448,19 @@ class _netF(nn.Module):
                     z, objective = self.split2d_s[i](z, reverse=True, objective=objective, eps=eps[i], eps_std=eps_std,
                                                      z2=z2_s[i] if z2_s else None)
 
-                z, objective = self.revnet2d_s[i](z, objective, reverse=True)
+                z, objective = self.revnet2d_s[i](z, objective, reverse=True, return_all=return_all)
+                if return_all: 
+                    z_all = z_all + z
+                    z = z[-1]
                 # print(i, 'z', z.shape)
-            if not return_obj:
+            if not return_obj and not return_all: 
                 return z
-            else:
-                return z, -objective
-
+            res = [z]
+            if return_obj:
+                res.append(-objective)
+            if return_all:
+                res.append(z_all)
+            return res
 
 class _netF2(nn.Module):
     def __init__(self, args):

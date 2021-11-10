@@ -1,6 +1,6 @@
 import sys
 import os
-
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import argparse
 import json
 import random
@@ -16,7 +16,7 @@ from math import log, pi, exp
 import numpy as np
 
 # I do not know why it must load before "import torchvision"
-from fid_v2_tf_cpu import fid_score
+# from fid_v2_tf_cpu import fid_score
 
 import torch
 from torch import cuda
@@ -33,16 +33,15 @@ import pygrid
 
 from model import get_activation, _netF, weights_init_xavier
 from tqdm import tqdm
+import pytorch_fid_wrapper as pfw
 
 # Model 
 
 class _netG(nn.Module):
     def __init__(self, args):
         super(_netG, self).__init__()
-        self.dim_c = 1
-        self.dim_z = args.nz
-        self.width = 28
-        self.height = 28
+        self.dim_c, self.dim_z = args.nc, args.nz
+        self.width = self.height = args.img_size
 
         self.block10 = nn.Sequential(
             nn.Linear(self.dim_z, 1024),
@@ -120,8 +119,9 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default="default", help='training or test mode')
     parser.add_argument('--load_checkpoint', type=str, default="", help='load checkpoint')
     parser.add_argument('--seed', default=1, type=int)
+    parser.add_argument('--generate', type=bool, default=False, help='do generation in test')
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
-    parser.add_argument('--dataset', type=str, default='mnist', choices=['svhn', 'celeba', 'celeba_crop'])
+    parser.add_argument('--dataset', type=str, default='mnist', choices=['svhn', 'celeba', 'celeba_crop', 'mnist', 'mnist_ad'])
     parser.add_argument('--img_size', default=28, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
     parser.add_argument('--nz', type=int, default=20, help='size of the latent z vector')
@@ -170,7 +170,8 @@ def parse_args():
     parser.add_argument('--n_ckpt', type=int, default=1, help='save ckpt each n epochs')
     parser.add_argument('--n_metrics', type=int, default=1, help='fid each n epochs')    #
     parser.add_argument('--n_stats', type=int, default=1, help='stats each n epochs')
-    parser.add_argument('--n_fid_samples', type=int, default=5000)
+    parser.add_argument('--n_fid_samples', type=int, default=50000)
+    parser.add_argument('--data_size', type=int, default=100000)
 
 
     return parser.parse_args()
@@ -249,9 +250,39 @@ def get_dataset(args):
                                              transforms.ToTensor(),
                                              transforms.Normalize(0.5, 0.5),
                                ]))
+        if args.data_size < 10000:
+            ds_train = torch.utils.data.Subset(ds_train, np.arange(args.data_size))
         return ds_train, ds_val
 
+    if args.dataset == "mnist_ad": 
 
+        assert args.abnormal != -1 
+        data = np.load('data/mnist.npz')
+
+        full_x_data = np.concatenate([data['x_train'], data['x_test'], data['x_valid']], axis=0).reshape(-1, 1, 28, 28) * 2 - 1
+        full_y_data = np.concatenate([data['y_train'], data['y_test'], data['y_valid']], axis=0)
+
+        normal_x_data = full_x_data[full_y_data!= args.abnormal]
+        normal_y_data = full_y_data[full_y_data!= args.abnormal]
+
+        inds = np.random.permutation(normal_x_data.shape[0])
+        normal_x_data = normal_x_data[inds]
+        normal_y_data = normal_y_data[inds]
+
+        index = int(normal_x_data.shape[0]*0.8)
+
+        training_x_data = normal_x_data[:min(index, args.data_size)]
+        training_y_data = normal_y_data[:min(index, args.data_size)]
+
+        testing_x_data = np.concatenate([normal_x_data[index:], full_x_data[full_y_data == args.abnormal]], axis=0)
+        testing_y_data = np.concatenate([normal_y_data[index:], full_y_data[full_y_data == args.abnormal]], axis=0)
+        inds = np.random.permutation(testing_x_data.shape[0])
+        testing_x_data = testing_x_data[inds]
+        testing_y_data = testing_y_data[inds]
+
+        ds_train = torch.utils.data.TensorDataset(torch.Tensor(training_x_data), torch.Tensor(training_y_data))
+        ds_val = torch.utils.data.TensorDataset(torch.Tensor(testing_x_data), torch.Tensor(testing_y_data))
+        return ds_train, ds_val
 
     if args.dataset == 'svhn':
         import torchvision.transforms as transforms
@@ -391,6 +422,8 @@ def get_dataset(args):
     else:
         raise ValueError(args.dataset)
 
+def plot(p, x):
+    return torchvision.utils.save_image(torch.clamp(x, -1., 1.), p, normalize=True, nrow=int(np.sqrt(x.shape[0])))
 ##########################################################################################################
 
 def train(args, output_dir, path_check_point):
@@ -426,10 +459,9 @@ def train(args, output_dir, path_check_point):
     assert len(ds_train) >= args.n_fid_samples
     to_range_0_1 = lambda x: (x + 1.) / 2.
     ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())
+    print(ds_fid.max(), ds_fid.min(), ds_fid.mean(), ds_fid.std())
     logger.info('ds_fid.shape={}'.format(ds_fid.shape))
 
-    def plot(p, x):
-        return torchvision.utils.save_image(torch.clamp(x, -1., 1.), p, normalize=True, nrow=int(np.sqrt(args.batch_size)))
 
     #################################################
     ## model
@@ -691,6 +723,7 @@ def train(args, output_dir, path_check_point):
         if epoch == args.n_epochs or epoch % args.n_metrics == 0:
 
             fid = get_fid(n=args.n_fid_samples)
+            fid = 100000 if fid is None else fid
             if fid < fid_best:
                 fid_best = fid
             logger.info('fid={}'.format(fid))
@@ -784,14 +817,14 @@ def compute_fid(args, x_data, x_samples, use_cpu=False):
     assert x_samples.shape[1] == x_samples.shape[2]
 
     # [0,255]
-    assert np.min(x_data) > 0.-1e-4
-    assert np.max(x_data) < 255.+1e-4
-    assert np.mean(x_data) > 10.
+    # assert np.min(x_data) > 0.-1e-4, "%.4f" % np.min(x_data)
+    # assert np.max(x_data) < 255.+1e-4
+    # assert np.mean(x_data) > 10.
 
     # [0,255]
-    assert np.min(x_samples) > 0.-1e-4
-    assert np.max(x_samples) < 255.+1e-4
-    assert np.mean(x_samples) > 1.
+    # assert np.min(x_samples) > 0.-1e-4, "%.4f" % np.min(x_data)
+    # assert np.max(x_samples) < 255.+1e-4
+    # assert np.mean(x_samples) > 1.
 
     if use_cpu:
         def create_session():
@@ -806,7 +839,7 @@ def compute_fid(args, x_data, x_samples, use_cpu=False):
             import tensorflow.compat.v1 as tf
             config = tf.ConfigProto()
             config.gpu_options.allow_growth = True
-            config.gpu_options.per_process_gpu_memory_fraction = 0.2
+            config.gpu_options.per_process_gpu_memory_fraction = 0.5
             config.gpu_options.visible_device_list = str(args.device)
             return tf.Session(config=config)
 
@@ -835,20 +868,51 @@ def compute_fid_nchw(args, x_data, x_samples):
 #################################################
 ## test
 
+def print_all_latent(netG, netF, args): 
+    to_range_0_1 = lambda x: (x + 1.) / 2.
+    # z_sample = torch.randn(20, args.nz, 1, 1).to(args.devices)
+    z_sample = torch.randn(1, args.nz, 1, 1).to(args.devices)
+    z_sample2 = torch.randn(1, args.nz, 1, 1).to(args.devices)
+    z_sample = torch.randn(1, args.nz, 1, 1).to(args.devices)
+    z_sample2 = torch.randn(1, args.nz, 1, 1).to(args.devices)
+    z_line = []
+    for p in np.linspace(0, 1, 10):
+        z_line.append(z_sample * p + z_sample2 * (1-p))
+    z_sample = torch.cat(z_line)
+    z_f_k, z_f_all = netF(torch.squeeze(z_sample), objective=torch.zeros(
+        int(z_sample.shape[0])).to(args.devices), reverse=True, return_all=True)
+    z_f_k = torch.cat([z_sample.squeeze()] + z_f_all)
+    x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+    x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+    path = 'output/generate_x_flow.png'.format(args.output_dir)
+    torchvision.utils.save_image(x_samples, path, normalize=True, nrow=10)
+
+def print_intepolation(netG, netF, args): 
+    to_range_0_1 = lambda x: (x + 1.) / 2.
+    z_sample = torch.randn(20, args.nz, 1, 1).to(args.devices)
+    z_sample2 = torch.randn(20, args.nz, 1, 1).to(args.devices)
+    z_line = []
+    for p in np.linspace(0, 1, 10):
+        z_line.append(z_sample * p + z_sample2 * (1-p))
+    z_sample = torch.cat(z_line)
+    z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(
+        int(z_sample.shape[0])).to(args.devices), reverse=True)
+    x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+    x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+    path = 'output/generate_intepolation.png'.format(args.output_dir)
+    torchvision.utils.save_image(x_samples, path, normalize=True, nrow=20)
+
 # AUC anormaly detection added by Jerry
 def test(args, output_dir, path_check_point):
 
     #################################################
     ## preamble
 
-    set_gpu(args.device)
+    if args.device > 0:
+        set_gpu(args.device)
     set_cuda(deterministic=args.gpu_deterministic)
     set_seed(args.seed)
-
-    job_id = int(args['job_id'])
-
-    device = torch.device('cuda:{}'.format(args.device) if torch.cuda.is_available() else 'cpu')
-
+    args.devices = device = torch.device('cuda:{}'.format(args.device) if torch.cuda.is_available() else 'cpu')
 
     #################################################
     ## model
@@ -867,28 +931,52 @@ def test(args, output_dir, path_check_point):
         netG.eval()
         netF.eval()
 
-
     #################################################
     ## test
 
     ds_train, ds_test = get_dataset(args)
 
-    # n = args.n_fid_samples
-    # logger.info('computing fid with {} samples'.format(n))
-    # eval_flag()
-    # to_range_0_1 = lambda x: (x + 1.) / 2.
-    # def sample_x():
+    if args.generate: 
+        print_all_latent(netG, netF, args)
+        n = args.n_fid_samples
+        print('computing fid with {} samples'.format(n))
+        eval_flag()
+        to_range_0_1 = lambda x: (x + 1.) / 2.
+        def sample_x(return_all=False):
+            z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
+            if return_all: 
+                z_f_k, z_f_all = netF(torch.squeeze(z_sample), objective=torch.zeros(
+                int(z_sample.shape[0])).to(device), reverse=True, return_obj=False, return_all=True)
+                z_f_all = [z_sample.squeeze()] + z_f_all
+                res = []
+                for z in z_f_all: 
+                    x_samples = netG(torch.reshape(z, (z.shape[0], z.shape[1], 1, 1)))
+                    res.append(to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu())
+            else: 
+                z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(
+                int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
+                x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+                res =  to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+            return res
 
-    #     z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
-    #     z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(
-    #         int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
-    #     x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
-    #     x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
-    #     return x_samples
-    # x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))]).numpy()
-    # ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())    
-    # fid = compute_fid_nchw(args, ds_fid, x_samples)
-    # logger.info('fid={}'.format(fid))
+
+        pfw.set_config(batch_size=args.batch_size, device=args.device)
+        
+        # fid = compute_fid_nchw(args, ds_fid.numpy(), x_samples.numpy())
+        ds_fid = torch.stack([to_range_0_1(ds_train[i][0]).cpu() for i in range(len(ds_train))])
+        ds_fid = ds_fid.repeat(1,3 if ds_fid.shape[1] == 1 else 1,1,1)
+        real_m, real_s = pfw.get_stats(ds_fid)
+        # x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))])
+        # x_samples = x_samples.repeat(1,3 if x_samples.shape[1] == 1 else 1,1,1)
+        # fid = pfw.fid(x_samples, real_m=real_m, real_s=real_s)
+        # print('fid=%.4f'%(fid))
+        
+        res = [sample_x(return_all=True) for _ in range(int(n / args.batch_size))]
+        for i, x in enumerate(res[0]):
+            x_sample = torch.cat([r[i] for r in res])
+            x_sample = x_sample.repeat(1,3 if x_sample.shape[1] == 1 else 1,1,1) 
+            fid = pfw.fid(x_sample, real_m=real_m, real_s=real_s)
+            print('layer %d: fid=%.4f'%(i, fid))
 
     dataloader_test = torch.utils.data.DataLoader(ds_test, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
@@ -919,13 +1007,13 @@ def test(args, output_dir, path_check_point):
             #f_log_lkhd, _, _ = calc_loss(log_p, logdet, args.f_in_channel, n_bins=2.0 ** args.n_bits)
 
             z_grad_f = torch.autograd.grad(f_log_lkhd, z)[0]
-
+ 
             z.data = z.data - 0.5 * g_l_step_size_testing * g_l_step_size_testing * (z_grad_g + z_grad_f)
             #if args.g_l_with_noise:
             #    z.data += args.g_l_step_size * torch.randn_like(z).data
 
-            z_grad_g_grad_norm = z_grad_g.view(args.batch_size, -1).norm(dim=1).mean()
-            z_grad_f_grad_norm = z_grad_f.view(args.batch_size, -1).norm(dim=1).mean()
+            z_grad_g_grad_norm = z_grad_g.view(x.shape[0], -1).norm(dim=1).mean()
+            z_grad_f_grad_norm = z_grad_f.view(x.shape[0], -1).norm(dim=1).mean()
 
         if verbose:
             logger.info('Langevin posterior: MSE={:8.3f}, f_log_lkhd={:8.3f}, z_grad_g_grad_norm={:8.3f}, z_grad_f_grad_norm={:8.3f}'.format(g_log_lkhd.item(), f_log_lkhd.item(), z_grad_g_grad_norm, z_grad_f_grad_norm))
@@ -937,8 +1025,8 @@ def test(args, output_dir, path_check_point):
     import matplotlib.pyplot as plt 
 
     Y_hat, Y, rec_errors = [], [], []
-    print('anomaly detection starts for %i' % args.abnormal)
-    for i, (x, y) in tqdm(enumerate(dataloader_test, 0)):
+    # print('anomaly detection starts for %i' % args.abnormal)
+    for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
         x = x.to(device)
         z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
         z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, verbose=False)[0]
@@ -955,7 +1043,7 @@ def test(args, output_dir, path_check_point):
     if args.abnormal != -1: 
         Y_raw = Y
         Y = np.concatenate([y.cpu().data.numpy() for y in Y]) == args.abnormal 
-        print("[%d / %d] abnormal used." % (Y.sum(), len(Y)))
+        # print("[%d / %d] abnormal used." % (Y.sum(), len(Y)))
         Y_hat = np.concatenate([y.cpu().data.numpy() for y in Y_hat])
         precision, recall, thresholds = precision_recall_curve(Y, Y_hat)
         auc_ = auc(recall, precision)
