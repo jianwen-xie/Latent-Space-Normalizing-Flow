@@ -408,8 +408,8 @@ def train(args, output_dir, path_check_point):
             if args.g_l_with_noise:
                 z.data += args.g_l_step_size * torch.randn_like(z).data
 
-            z_grad_g_grad_norm = z_grad_g.view(args.batch_size, -1).norm(dim=1).mean()
-            z_grad_f_grad_norm = z_grad_f.view(args.batch_size, -1).norm(dim=1).mean()
+            z_grad_g_grad_norm = z_grad_g.view(z.shape[0], -1).norm(dim=1).mean()
+            z_grad_f_grad_norm = z_grad_f.view(z.shape[0], -1).norm(dim=1).mean()
 
         if verbose:
             logger.info('Langevin posterior: MSE={:8.3f}, f_log_lkhd={:8.3f}, z_grad_g_grad_norm={:8.3f}, z_grad_f_grad_norm={:8.3f}'.format(g_log_lkhd.item(), f_log_lkhd.item(), z_grad_g_grad_norm, z_grad_f_grad_norm))
