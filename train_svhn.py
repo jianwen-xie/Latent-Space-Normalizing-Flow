@@ -545,12 +545,10 @@ def train(args, output_dir, path_check_point):
                         'fid_best={:8.2f}'.format(fid_best))
 
                     num_step = epoch*len(dataloader_train)+i
-                    tb_writer.add_scalar("train/grad_norm_g", grad_norm_g, num_step)
                     tb_writer.add_scalar("train/loss_g", loss_g, num_step)
                     tb_writer.add_scalar("train/loss_f", loss_f, num_step)
                     tb_writer.add_scalar("train/z_g_grad_norm", z_g_grad_norm, num_step)
                     tb_writer.add_scalar("train/z_f_grad_norm", z_f_grad_norm, num_step)
-                    tb_writer.add_scalar("train/posterior_moments", posterior_moments, num_step)
                     tb_writer.add_scalar("train/fid_best", fid_best, num_step)
 
         # Schedule
