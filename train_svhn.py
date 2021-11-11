@@ -320,7 +320,6 @@ def train(args, output_dir, path_check_point):
     set_gpu(args.device)
     set_cuda(deterministic=args.gpu_deterministic)
     set_seed(args.seed)
-    makedirs_exp(output_dir)
     tb_writer = SummaryWriter(log_dir=output_dir)
     job_id = int(args['job_id'])
     logger = setup_logging('job{}'.format(job_id), output_dir, console=True)
@@ -996,30 +995,25 @@ def merge_dicts(a, b, c):
 ##########################################################################################################
 ## Main
 
-def makedirs_exp(output_dir):
-    os.makedirs(output_dir + '/samples')
-    os.makedirs(output_dir + '/ckpt')
-
 def main():
 
     # print_gpus()
 
     fs_prefix = './' 
 
-    # preamble
-    exp_id = get_exp_id(__file__)
-    output_dir = pygrid.get_output_dir(exp_id, fs_prefix=fs_prefix)
-
     # run
-    copy_source(__file__, output_dir)
     opt = {'job_id': int(0), 'status': 'open'}
 
     args = parse_args()
     args = pygrid.overwrite_opt(args, opt)
     args = to_named_dict(args)
-    output_dir = pygrid.get_output_dir(get_exp_id(__file__), fs_prefix='./') if args.output_dir == "default" else ("output/train_mnist/" + args.output_dir)
+    output_dir = pygrid.get_output_dir(get_exp_id(__file__), fs_prefix='./') if args.output_dir == "default" else ("output/train_svhn/" + args.output_dir)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
+        os.makedirs(output_dir + '/samples')
+        os.makedirs(output_dir + '/ckpt')
+
+    copy_source(__file__, output_dir)
 
     if args.train_mode:
         # training mode
