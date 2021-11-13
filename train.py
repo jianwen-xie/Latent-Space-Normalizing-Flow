@@ -583,9 +583,10 @@ def train(args, output_dir, path_check_point):
                     z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
                     z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
                     x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
-                    x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+                    x_samples = to_range_0_1(torch.nan_to_num(x_samples)).clamp(min=0., max=1.).detach().cpu()
                     return x_samples
-                x_samples = torch.cat([sample_x() for _ in range(int(args.n_fid_samples / args.batch_size))])
+                with torch.no_grad():
+                    x_samples = torch.cat([sample_x() for _ in range(int(args.n_fid_samples / args.batch_size))]).detach()
                 fid = fid_calculator.fid(x_samples)
 
             except Exception as e:
