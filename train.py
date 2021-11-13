@@ -190,13 +190,13 @@ def get_dataset(args):
 
         import torchvision.transforms as transforms
 
-        ds_train = torchvision.datasets.CelebA(fs_prefix + 'data', split='train', download=True,
+        ds_train = torchvision.datasets.CelebA(fs_prefix + 'data', split='train', download=False,
                                                     transform=transforms.Compose([
                                                         transforms.Lambda(crop),
                                                         transforms.Resize(args.img_size),
                                                         transforms.ToTensor(),
                                                         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]))
-        ds_val = torchvision.datasets.CelebA(fs_prefix + 'data', split='valid', download=True,
+        ds_val = torchvision.datasets.CelebA(fs_prefix + 'data', split='valid', download=False,
                                                     transform=transforms.Compose([
                                                         transforms.Lambda(crop),
                                                         transforms.Resize(args.img_size),
@@ -327,12 +327,12 @@ def train(args, output_dir, path_check_point):
         ds_train = IncompleteDataset(ds_train, masks, args.data_size)
     elif args.incomplete_train >= 0: 
         generate_size = min(len(ds_train), args.data_size)
-        masks = np.ones((generate_size, 3, args.img_size, args.img_size))
+        masks = np.ones((generate_size, 3, args.img_size, args.img_size), dtype=np.float32)
         patch_size, num_patch = 8, args.incomplete_train 
         rad1 = np.random.randint(0, args.img_size-patch_size, size=(generate_size, num_patch, 2))
         for i in range(generate_size): 
             for j in range(num_patch): 
-                masks[i, :, rad1[i, j, 0]:rad1[i, j, 0]+patch_size, rad1[i, j, 1]:rad1[i, j, 1]+patch_size] = 0
+                masks[i, :, rad1[i, j, 0]:rad1[i, j, 0]+patch_size, rad1[i, j, 1]:rad1[i, j, 1]+patch_size] = 0.0
         print("Use %d patch: %.4f/100 is covered." % (j+1, 1 - masks.mean()))
         ds_train = IncompleteDataset(ds_train, masks, args.data_size)
         
