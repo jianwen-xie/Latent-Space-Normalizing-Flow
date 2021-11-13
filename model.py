@@ -45,6 +45,29 @@ def weights_init_xavier(m):
         m.bias.data.fill_(0)
 
 
+class _netG_celeba(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        f = get_activation(args.g_activation, args)
+        self.gen = nn.Sequential(
+            nn.ConvTranspose2d(args.nz, args.ngf*8, 4, 1, 0, bias = not args.g_batchnorm),
+            nn.BatchNorm2d(args.ngf*8) if args.g_batchnorm else nn.Identity(),
+            f,
+            nn.ConvTranspose2d(args.ngf*8, args.ngf*4, 4, 2, 1, bias = not args.g_batchnorm),
+            nn.BatchNorm2d(args.ngf*4) if args.g_batchnorm else nn.Identity(),
+            f,
+            nn.ConvTranspose2d(args.ngf*4, args.ngf*2, 4, 2, 1, bias = not args.g_batchnorm),
+            nn.BatchNorm2d(args.ngf*2) if args.g_batchnorm else nn.Identity(),
+            f,
+            nn.ConvTranspose2d(args.ngf*2, args.ngf*1, 4, 2, 1, bias = not args.g_batchnorm),
+            nn.BatchNorm2d(args.ngf*1) if args.g_batchnorm else nn.Identity(),
+            f,
+            nn.ConvTranspose2d(args.ngf*1, args.nc, 4, 2, 1),
+            nn.Tanh()
+        )
+    def forward(self, z):
+        return self.gen(z)
+
 class _netG(nn.Module):
     def __init__(self, args):
         super().__init__()
@@ -75,6 +98,44 @@ class _netG(nn.Module):
 
     def forward(self, z):
         return self.gen(z)
+
+class _netG_mnist(nn.Module):
+    def __init__(self, args):
+        super(_netG, self).__init__()
+        self.dim_c, self.dim_z = args.nc, args.nz
+        self.width = self.height = args.img_size
+
+        self.block10 = nn.Sequential(
+            nn.Linear(self.dim_z, 1024),
+            nn.BatchNorm1d(1024),
+            nn.ReLU(True),
+        )
+        self.block11 = nn.Sequential(
+            nn.Linear(1024, 128 * self.width//4 * self.height//4),
+            nn.BatchNorm1d(128 * self.width//4 * self.height//4),
+            nn.ReLU(True),
+        )
+        self.block12 = nn.Sequential(
+            nn.ConvTranspose2d(128, 64, 2, stride=2),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+        )
+        self.block13 = nn.Sequential(
+            nn.ConvTranspose2d(64, self.dim_c, 2, stride=2),
+            nn.Tanh(),
+        )
+
+    def decoder(self, x):
+        h = self.block10(x)
+        h = self.block11(h)
+        h = h.view(h.shape[0], 128, self.width//4, self.height//4)
+        h = self.block12(h)
+        h = self.block13(h)
+        return h
+
+    def forward(self, z):
+        x = self.decoder(z.squeeze())
+        return x
 
 ####################################################
 ## EBM

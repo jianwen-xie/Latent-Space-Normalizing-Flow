@@ -14,7 +14,8 @@ import time
 import math
 from math import log, pi, exp
 import numpy as np
-
+from tqdm import tqdm
+from scipy import io as sio
 # I do not know why it must load before "import torchvision"
 # from fid_v2_tf_cpu import fid_score
 
@@ -31,8 +32,12 @@ import torchvision.transforms as transforms
 from torch.utils.tensorboard import SummaryWriter
 
 import pygrid
+import os
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
-from model import _netG, _netF, weights_init_xavier, _netG_celeba
+from model import _netG, _netF, weights_init_xavier, _netG_celeba, _netG_mnist
 import pytorch_fid_wrapper as pfw
 
 ##########################################################################################################
@@ -42,17 +47,21 @@ def parse_args():
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--train_mode', type=bool, default=True, help='training or test mode')
+    parser.add_argument('--mode', type=str, default="train", help='training or test mode')
     parser.add_argument('--seed', default=1, type=int)
+    parser.add_argument('--abnormal', type=int, default=-1, help='training or test mode')
+    parser.add_argument('--load_checkpoint', type=str, default="", help='load checkpoint')
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
     parser.add_argument('--device', type=int, default=0, help='training or test mode')
     parser.add_argument('--output_dir', type=str, default="default", help='training or test mode')
     parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'celeba', 'celeba_crop'])
+    parser.add_argument('--incomplete_train', type=int, default=0, help='training or test mode')
+    parser.add_argument('--data_size', type=int, default=1000000)
     parser.add_argument('--img_size', default=32, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
     parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
     parser.add_argument('--nc', default=3)
-    parser.add_argument('--ngf', default=64, help='feature dimensions of generator')
+    parser.add_argument('--ngf',type=int,  default=64, help='feature dimensions of generator')
 
     parser.add_argument('--g_llhd_sigma', type=float, default=0.3, help='prior of factor analysis')
     parser.add_argument('--g_activation', type=str, default='lrelu')
@@ -101,60 +110,42 @@ def parse_args():
 
     return parser.parse_args()
 
-
-def create_args_grid():
-    # TODO add your enumeration of parameters here
-
-    e_lr = [0.00002]
-    e_l_step_size = [0.4]
-    e_init_sig = [1.0]
-    e_l_steps = [30,50,60]
-    e_activation = ['lrelu']
-
-    g_llhd_sigma = [0.3]
-    g_lr = [0.0001]
-    g_l_steps = [20]
-    g_activation = ['lrelu']
-
-    ngf = [64]
-    ndf = [200]
-
-    args_list = [e_lr, e_l_step_size, e_init_sig, e_l_steps, e_activation, g_llhd_sigma, g_lr, g_l_steps, g_activation, ngf, ndf]
-
-    opt_list = []
-    for i, args in enumerate(itertools.product(*args_list)):
-        opt_job = {'job_id': int(i), 'status': 'open'}
-        opt_args = {
-            'e_lr': args[0],
-            'e_l_step_size': args[1],
-            'e_init_sig': args[2],
-            'e_l_steps': args[3],
-            'e_activation': args[4],
-            'g_llhd_sigma': args[5],
-            'g_lr': args[6],
-            'g_l_steps': args[7],
-            'g_activation': args[8],
-            'ngf': args[9],
-            'ndf': args[10],
-        }
-        # TODO add your result metric here
-        opt_result = {'fid_best': 0.0, 'fid': 0.0, 'mse': 0.0}
-
-        opt_list += [merge_dicts(opt_job, opt_args, opt_result)]
-
-    return opt_list
-
-
-def update_job_result(job_opt, job_stats):
-    # TODO add your result metric here
-    job_opt['fid_best'] = job_stats['fid_best']
-    job_opt['fid'] = job_stats['fid']
-    job_opt['mse'] = job_stats['mse']
-
-
 ##########################################################################################################
 ## Data
 
+class IncompleteDataset(torch.utils.data.Dataset):
+
+    def __init__(self, dataset, masks, data_size):
+        self.dataset = dataset 
+        self.masks = masks 
+        self.data_size = min(data_size, len(self.dataset))
+        if masks.shape[0] < self.data_size: 
+            print("Warning! masks is smaller than data_size.")
+            self.data_size = masks.shape[0]
+    def __len__(self):
+        return self.data_size
+    def __getitem__(self, idx): 
+        x, y = self.dataset[idx]
+        return x, y, torch.from_numpy(self.masks[idx]).to(x.device)
+
+class IncompleteCollator(object): 
+
+    def __init__(self, args, masks):
+        self.mode = args.incomplete_mode
+    def __call__(self, imgs):
+        if self.mode == -1:
+            return imgs 
+        elif self.mode == 0: 
+            # random small patch 
+            generate_size = imgs.shape[0]
+            masks = np.ones_like(imgs)
+            patch_size, num_patch = 8, 20 
+            rad1 = torch.randint(0, masks.shape[2]-patch_size, size=(generate_size, num_patch, 2))
+            for i in range(generate_size): 
+                for j in range(num_patch): 
+                    masks[i, :, rad1[i, j, 0]:rad1[i, j, 0]+patch_size, rad1[i, j, 1]:rad1[i, j, 1]+patch_size] = 0
+            return imgs, masks 
+     
 def get_dataset(args):
 
     fs_prefix = './'
@@ -331,6 +322,10 @@ def train(args, output_dir, path_check_point):
     ## data
 
     ds_train, ds_val = get_dataset(args)
+    if args.incomplete_train: 
+        masks = sio.loadmat('./data/celebA_masks_10000_3_50.mat')['masks']
+        ds_train = IncompleteDataset(ds_train, masks, args.data_size)
+
     logger.info('len(ds_train)={}'.format(len(ds_train)))
     logger.info('len(ds_val)={}'.format(len(ds_val)))
 
@@ -341,7 +336,6 @@ def train(args, output_dir, path_check_point):
     to_range_0_1 = lambda x: (x + 1.) / 2.
     ds_fid = torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu()
     fid_calculator = Fid_calculator(args, ds_fid)
-
     def plot(p, x):
         return torchvision.utils.save_image(torch.clamp(x, -1., 1.), p, normalize=True, nrow=int(np.sqrt(args.batch_size)))
 
@@ -350,8 +344,10 @@ def train(args, output_dir, path_check_point):
 
     if args.dataset == "svhn":
         netG = _netG(args)
-    elif args.dataset == "celeba":
+    elif args.dataset == "celeba" or args.dataset == "celeba_crop":
         netG = _netG_celeba(args)
+    elif args.dataset == "mnist" or args.dataset == "mnist_ad":
+        netG = _netG_mnist(args)
     netF = _netF(args, nz=args.nz)
 
     netG.apply(weights_init_xavier)
@@ -371,7 +367,7 @@ def train(args, output_dir, path_check_point):
         netG.train()
         netF.train()
 
-    mse = nn.MSELoss(reduction='sum')
+    mse = nn.MSELoss(reduction='none')
     mse_mean = nn.MSELoss(reduction='mean')
 
     #################################################
@@ -390,13 +386,16 @@ def train(args, output_dir, path_check_point):
         return sig * torch.randn(*[n, args.nz, 1, 1]).to(device)
 
 
-    def sample_langevin_post_z_with_flow(z, x, netG, netF, verbose=False):
+    def sample_langevin_post_z_with_flow(z, x, netG, netF, verbose=False, mask=None):
         z = z.clone().detach()
         z.requires_grad = True
 
         for i in range(args.g_l_steps):
             x_hat = netG(z)
-            g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * mse(x_hat, x) #/ x.shape[0]
+            g_log_lkhd = mse(x_hat, x) #/ x.shape[0]
+            if mask is not None: 
+                g_log_lkhd *= mask 
+            g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * g_log_lkhd.sum()
             z_grad_g = torch.autograd.grad(g_log_lkhd, z)[0]
 
             z1, logdet, _ = netF(torch.squeeze(z), objective=torch.zeros(int(z.shape[0])).to(device), init=False)
@@ -461,24 +460,31 @@ def train(args, output_dir, path_check_point):
 
     for epoch in range(epoch_start, args.n_epochs):
 
-        for i, (x, y) in enumerate(dataloader_train, 0):
+        for i, x_input in enumerate(dataloader_train, 0):
 
+            if args.incomplete_train: 
+                x, y, masks = x_input
+                x = x * masks 
+            else: 
+                x, y = x_input
+                masks = torch.ones(1)
             train_flag()
 
             x = x.to(device)
+            masks = masks.to(device)
             batch_size = x.shape[0]
 
             # Initialize chain
             z_g_0 = sample_p_0(n=batch_size)
             z_f_0 = sample_p_0(n=batch_size)
 
-            z_g_k, z_g_grad_norm, z_f_grad_norm = sample_langevin_post_z_with_flow(Variable(z_g_0), x, netG, netF, verbose=False)
+            z_g_k, z_g_grad_norm, z_f_grad_norm = sample_langevin_post_z_with_flow(Variable(z_g_0), x, netG, netF, verbose=False, mask=masks)
 
             # Learn generator
             optG.zero_grad()
 
             x_hat = netG(z_g_k.detach())
-            loss_g = mse(x_hat, x) / batch_size
+            loss_g = (mse(x_hat, x) * masks).sum() / batch_size
             loss_g.backward()
             grad_norm_g = get_grad_norm(netG.parameters())
             if args.g_is_grad_clamp:
@@ -557,21 +563,6 @@ def train(args, output_dir, path_check_point):
         # lr_scheduleE.step(epoch=epoch)
         lr_scheduleG.step(epoch=epoch)
         lr_scheduleF.step(epoch=epoch)
-
-        # Stats
-        # if epoch % args.n_stats == 0:
-        #     stats['loss_g'].append(loss_g.item())
-        #     stats['loss_e'].append(loss_e.item())
-        #     stats['en_neg'].append(en_neg.data.item())
-        #     stats['en_pos'].append(en_pos.data.item())
-        #     stats['grad_norm_g'].append(grad_norm_g)
-        #     stats['grad_norm_e'].append(grad_norm_e)
-        #     stats['z_g_grad_norm'].append(z_g_grad_norm.item())
-        #     stats['z_e_grad_norm'].append(z_e_grad_norm.item())
-        #     stats['z_e_k_grad_norm'].append(z_e_k_grad_norm.item())
-        #     stats['fid'].append(fid)
-        #     interval.append(epoch + 1)
-        #     plot_stats(output_dir, stats, interval)
 
         # Metrics
         if epoch == args.n_epochs or epoch % args.n_metrics == 0:
@@ -666,7 +657,6 @@ def train(args, output_dir, path_check_point):
     logger.info('done')
 
 
-
 ##########################################################################################################
 ## Metrics
 
@@ -674,92 +664,67 @@ def is_xsede():
     import socket
     return 'psc' in socket.gethostname()
 
-
-def compute_fid(args, x_data, x_samples, use_cpu=False):
-
-    assert type(x_data) == np.ndarray
-    assert type(x_samples) == np.ndarray
-
-    # RGB
-    assert x_data.shape[3] == 3
-    assert x_samples.shape[3] == 3
-
-    # NHWC
-    assert x_data.shape[1] == x_data.shape[2]
-    assert x_samples.shape[1] == x_samples.shape[2]
-
-    # [0,255]
-    assert np.min(x_data) > 0.-1e-4
-    assert np.max(x_data) < 255.+1e-4
-    assert np.mean(x_data) > 10.
-
-    # [0,255]
-    assert np.min(x_samples) > 0.-1e-4
-    assert np.max(x_samples) < 255.+1e-4
-    assert np.mean(x_samples) > 1.
-
-    if use_cpu:
-        def create_session():
-            import tensorflow.compat.v1 as tf
-            config = tf.ConfigProto()
-            config.gpu_options.allow_growth = True
-            config.gpu_options.per_process_gpu_memory_fraction = 0.0
-            config.gpu_options.visible_device_list = ''
-            return tf.Session(config=config)
-    else:
-        def create_session():
-            import tensorflow.compat.v1 as tf
-            config = tf.ConfigProto()
-            config.gpu_options.allow_growth = True
-            config.gpu_options.per_process_gpu_memory_fraction = 0.2
-            config.gpu_options.visible_device_list = str(args.device)
-            return tf.Session(config=config)
-
-    path = '/tmp' if not is_xsede() else '/pylon5/ac561ep/enijkamp/inception'
-
-    fid = fid_score(create_session, x_data, x_samples, path, cpu_only=use_cpu)
-
-    return fid
-
-def compute_fid_nchw(args, x_data, x_samples):
-
-    to_nhwc = lambda x: np.transpose(x, (0, 2, 3, 1))
-
-    x_data_nhwc = to_nhwc(255 * x_data)
-    x_samples_nhwc = to_nhwc(255 * x_samples)
-
-    fid = compute_fid(args, x_data_nhwc, x_samples_nhwc)
-
-    return fid
-
-
 #################################################
 ## test
 
+def print_all_latent(netG, netF, args): 
+    to_range_0_1 = lambda x: (x + 1.) / 2.
+    z_sample = torch.randn(20, args.nz, 1, 1).to(args.devices)
+    # z_sample = torch.randn(1, args.nz, 1, 1).to(args.devices)
+    # z_sample2 = torch.randn(1, args.nz, 1, 1).to(args.devices)
+    # z_sample = torch.randn(1, args.nz, 1, 1).to(args.devices)
+    # z_sample2 = torch.randn(1, args.nz, 1, 1).to(args.devices)
+    # z_line = []
+    # for p in np.linspace(0, 1, 10):
+    #     z_line.append(z_sample * p + z_sample2 * (1-p))
+    # z_sample = torch.cat(z_line)
+    z_f_k, z_f_all = netF(torch.squeeze(z_sample), objective=torch.zeros(
+        int(z_sample.shape[0])).to(args.devices), reverse=True, return_all=True)
+    z_f_k = torch.cat([z_sample.squeeze()] + z_f_all)
+    x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+    x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+    path = 'output/generate_x_flow_rand_celeba.png'.format(args.output_dir)
+    torchvision.utils.save_image(x_samples, path, normalize=True, nrow=20)
+
+def print_intepolation(netG, netF, args): 
+    to_range_0_1 = lambda x: (x + 1.) / 2.
+    z_sample = torch.randn(20, args.nz, 1, 1).to(args.devices)
+    z_sample2 = torch.randn(20, args.nz, 1, 1).to(args.devices)
+    z_line = []
+    for p in np.linspace(0, 1, 10):
+        z_line.append(z_sample * p + z_sample2 * (1-p))
+    z_sample = torch.cat(z_line)
+    z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(
+        int(z_sample.shape[0])).to(args.devices), reverse=True)
+    x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+    x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+    path = 'output/generate_intepolation.png'.format(args.output_dir)
+    torchvision.utils.save_image(x_samples, path, normalize=True, nrow=20)
+
+# AUC anormaly detection added by Jerry
 def test(args, output_dir, path_check_point):
 
     #################################################
     ## preamble
 
-    set_gpu(args.device)
+    if args.device > 0:
+        set_gpu(args.device)
     set_cuda(deterministic=args.gpu_deterministic)
     set_seed(args.seed)
-
-    job_id = int(args['job_id'])
-
-    logger = setup_logging('job{}'.format(job_id), output_dir, console=True)
-    #logger.info(args)
-
-    device = torch.device('cuda:{}'.format(args.device) if torch.cuda.is_available() else 'cpu')
-
+    args.devices = device = torch.device('cuda:{}'.format(args.device) if torch.cuda.is_available() else 'cpu')
 
     #################################################
     ## model
 
-    netG = _netG(args)
+    if args.dataset == "svhn":
+        netG = _netG(args)
+    elif args.dataset == "celeba" or args.dataset == "celeba_crop":
+        netG = _netG_celeba(args)
+    elif args.dataset == "mnist" or args.dataset == "mnist_ad":
+        netG = _netG_mnist(args)
     netF = _netF(args, nz=args.nz)
 
-    ckp=torch.load(path_check_point)
+    ckp = torch.load(path_check_point)
     netG.load_state_dict(ckp['netG'])
     netF.load_state_dict(ckp['netF'])
 
@@ -770,45 +735,67 @@ def test(args, output_dir, path_check_point):
         netG.eval()
         netF.eval()
 
-
     #################################################
     ## test
 
-    n = args.n_fid_samples
-
-    logger.info('computing fid with {} samples'.format(n))
-
-    eval_flag()
     to_range_0_1 = lambda x: (x + 1.) / 2.
-
-    def sample_x():
-
-        z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
-        z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device),
-                     reverse=True, return_obj=False)
-
-        x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
-        x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
-
-        return x_samples
-
-    x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))]).numpy()
-
     ds_train, ds_test = get_dataset(args)
-    ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())    
-    
+    real_m = None
+    args.tasks = ["generate_all"]
+    if "generate_all" in args.tasks: 
+        print_all_latent(netG, netF, args)
+        n = args.n_fid_samples
+        print('computing fid with {} samples'.format(n))
+        eval_flag()
+        to_range_0_1 = lambda x: (x + 1.) / 2.
+        def sample_x():
+            z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
+            z_f_k, z_f_all = netF(torch.squeeze(z_sample), objective=torch.zeros(
+            int(z_sample.shape[0])).to(device), reverse=True, return_obj=False, return_all=True)
+            z_f_all = [z_sample.squeeze()] + z_f_all
+            res = []
+            for z in z_f_all: 
+                x_samples = netG(torch.reshape(z, (z.shape[0], z.shape[1], 1, 1)))
+                res.append(to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu())
+            return res
 
-    fid = compute_fid_nchw(args, ds_fid, x_samples)
+        pfw.set_config(batch_size=args.batch_size, device=args.device)
+        ds_fid = torch.stack([to_range_0_1(ds_train[i][0]).cpu() for i in range(len(ds_train))])
+        ds_fid = ds_fid.repeat(1,3 if ds_fid.shape[1] == 1 else 1,1,1)
+        real_m, real_s = pfw.get_stats(ds_fid)
+        res = [sample_x() for _ in range(int(n / args.batch_size))]
+        for i, x in enumerate(res[0]):
+            x_sample = torch.cat([r[i] for r in res])
+            x_sample = x_sample.repeat(1,3 if x_sample.shape[1] == 1 else 1,1,1) 
+            fid = pfw.fid(x_sample, real_m=real_m, real_s=real_s)
+            print('layer %d: fid=%.4f'%(i, fid))
 
-    logger.info('fid={}'.format(fid))
+    if "generate" in args.tasks: 
+        n = args.n_fid_samples
+        print('computing fid with {} samples'.format(n))
+        eval_flag()
+        def sample_x(return_all=False):
+            z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
+            z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(
+            int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
+            x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+            res =  to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+            return res
 
-
-
+        if real_m is None: 
+            pfw.set_config(batch_size=args.batch_size, device=args.device)
+            ds_fid = torch.stack([to_range_0_1(ds_train[i][0]).cpu() for i in range(len(ds_train))])
+            ds_fid = ds_fid.repeat(1,3 if ds_fid.shape[1] == 1 else 1,1,1)
+            real_m, real_s = pfw.get_stats(ds_fid)
+        x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))])
+        x_samples = x_samples.repeat(1,3 if x_samples.shape[1] == 1 else 1,1,1)
+        fid = pfw.fid(x_samples, real_m=real_m, real_s=real_s)
+        print('fid=%.4f'%(fid))
+        
     dataloader_test = torch.utils.data.DataLoader(ds_test, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
-    mse = nn.MSELoss(reduction='sum')
-
-    def sample_langevin_post_z_with_flow(z, x, netG, netF, verbose=False):
+    mse = nn.MSELoss(reduction='none')
+    def sample_langevin_post_z_with_flow(z, x, netG, netF, mask=None):
         z = z.clone().detach()
         z.requires_grad = True
 
@@ -817,78 +804,109 @@ def test(args, output_dir, path_check_point):
 
         for i in range(g_l_steps_testing):
             x_hat = netG(z)
-            g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * mse(x_hat, x) #/ x.shape[0]
+            g_log_lkhd = mse(x_hat, x) #/ x.shape[0]
+            if mask is not None: 
+                g_log_lkhd *= mask 
+            g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * g_log_lkhd.sum()
             z_grad_g = torch.autograd.grad(g_log_lkhd, z)[0]
 
             z1, logdet, _ = netF(torch.squeeze(z), objective=torch.zeros(int(z.shape[0])).to(device), init=False)
             prior_ll = -0.5 * (z1 ** 2)
             prior_ll = prior_ll.flatten(1).sum(-1) + np.log(2 * np.pi)
             ll = prior_ll + logdet
-            #f_log_lkhd = -ll.mean()
             f_log_lkhd = -ll.sum()
-
-
-            #log_p, logdet, _ = netF(z)
-            #logdet = logdet.mean()
-            #f_log_lkhd, _, _ = calc_loss(log_p, logdet, args.f_in_channel, n_bins=2.0 ** args.n_bits)
-
             z_grad_f = torch.autograd.grad(f_log_lkhd, z)[0]
-
+ 
             z.data = z.data - 0.5 * g_l_step_size_testing * g_l_step_size_testing * (z_grad_g + z_grad_f)
             #if args.g_l_with_noise:
             #    z.data += args.g_l_step_size * torch.randn_like(z).data
-
-            z_grad_g_grad_norm = z_grad_g.view(args.batch_size, -1).norm(dim=1).mean()
-            z_grad_f_grad_norm = z_grad_f.view(args.batch_size, -1).norm(dim=1).mean()
-
-        if verbose:
-            logger.info('Langevin posterior: MSE={:8.3f}, f_log_lkhd={:8.3f}, z_grad_g_grad_norm={:8.3f}, z_grad_f_grad_norm={:8.3f}'.format(g_log_lkhd.item(), f_log_lkhd.item(), z_grad_g_grad_norm, z_grad_f_grad_norm))
-
+            z_grad_g_grad_norm = z_grad_g.view(x.shape[0], -1).norm(dim=1).mean()
+            z_grad_f_grad_norm = z_grad_f.view(x.shape[0], -1).norm(dim=1).mean()
 
         return z.detach(), z_grad_g_grad_norm, z_grad_f_grad_norm
 
+    if "incomplete" in args.tasks: 
 
-    recon_error = 0
-    for i, (x, y) in enumerate(dataloader_test, 0):
+        # random small square:
+        generate_size = args.batch_size // 2
+        masks = np.ones((generate_size * 2, args.img_size, args.img_size))
+        patch_size, num_patch = 8, 20 
+        rad1 = torch.randint(0, args.img_size-patch_size, size=(generate_size, num_patch, 2))
+        for i in range(generate_size): 
+            for j in range(num_patch): 
+                masks[i, rad1[i, j, 0]:rad1[i, j, 0]+patch_size, rad1[i, j, 1]:rad1[i, j, 1]+patch_size] = 0
 
+        # random large square: 
+        patch_size, num_patch = 32, 1 
+        rad2 = torch.randint(0, args.img_size-patch_size, size=(generate_size, num_patch, 2))
+        for i in range(generate_size): 
+            for j in range(num_patch): 
+                masks[i+generate_size, rad2[i, j, 0]:rad2[i, j, 0]+patch_size, rad2[i, j, 1]:rad2[i, j, 1]+patch_size] = 0
+        masks = torch.tensor(masks).to(device).unsqueeze(1).repeat(1,3,1,1)
+
+        # constant large square: 
+        generate_size = args.batch_size
+        patch_size, num_patch = 32, 1 
+        rad2 = torch.ones(size=(generate_size, num_patch, 2)) 
+        for i in range(generate_size): 
+            for j in range(num_patch): 
+                masks[i+generate_size, rad2[i, j, 0]:rad2[i, j, 0]+patch_size, rad2[i, j, 1]:rad2[i, j, 1]+patch_size] = 0
+        masks = torch.tensor(masks).to(device).unsqueeze(1).repeat(1,3,1,1)
+
+        rec_errors,x_samples = [], []
+        for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
+            x = x.to(device)
+            break 
+        for i in range(10):
+            z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
+            z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, mask=None if i==0 else masks)[0]
+            x_hat = netG(z_g_k.detach())
+            rec_errors.append(mse(x_hat, x).mean())
+            print(rec_errors[-1])
+            x_samples.append(x_hat.clamp(min=-1., max=1.).detach().cpu())
+        x_samples = torch.cat([x.cpu(), (x * masks).cpu()] + x_samples)
+        path = 'output/incomplete.png'.format(args.output_dir)
+        torchvision.utils.save_image(x_samples, path, normalize=True, nrow=args.batch_size)
+
+        for i in range(1, 10): 
+            x_samples[i+2] = x_samples[i+2].masked_fill(1 - masks, x)
+        path = 'output/incomplete_true.png'.format(args.output_dir)
+        torchvision.utils.save_image(x_samples, path, normalize=True, nrow=args.batch_size)
+        
+        
+
+    from sklearn.metrics import precision_recall_curve, auc
+    import matplotlib.pyplot as plt 
+
+    Y_hat, Y, rec_errors = [], [], []
+    # print('anomaly detection starts for %i' % args.abnormal)
+    for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
         x = x.to(device)
-
         z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
-        z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, verbose=False)[0]
+        z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF)[0]
         x_hat = netG(z_g_k.detach())
+        z1, logdet, _ = netF(torch.squeeze(z_g_k), objective=torch.zeros(int(z_g_k.shape[0])).to(device), init=False)
         # x_hat = to_range_0_1(x_hat).clamp(min=0., max=1.)
-        recon_error = recon_error + float(mse(x_hat, x).cpu().data.numpy()) / x.shape[0] / 3 / args.img_size / args.img_size
+        rec_errors.append(mse(x_hat, x).sum())
+        if args.abnormal is not None: 
+            g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * torch.sum(torch.pow(x - x_hat, 2), (3,2,1))
+            f_log_lkhd = -((-0.5 * (z1 ** 2)).flatten(1).sum(-1) + np.log(2 * np.pi) + logdet)
+            Y_hat.append(g_log_lkhd + f_log_lkhd)
+            Y.append(y) 
 
-    recon_error = recon_error / (i + 1)
-    logger.info('reconstruction error={}'.format(recon_error))
-
-
-
-
-
-
-##########################################################################################################
-## Plots
-
-import os
-import matplotlib
-
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
-def plot_stats(output_dir, stats, interval):
-    content = stats.keys()
-    # f = plt.figure(figsize=(20, len(content) * 5))
-    f, axs = plt.subplots(len(content), 1, figsize=(20, len(content) * 5))
-    for j, (k, v) in enumerate(stats.items()):
-        axs[j].plot(interval, v)
-        axs[j].set_ylabel(k)
-
-    f.savefig(os.path.join(output_dir, 'stat.pdf'), bbox_inches='tight')
-    f.savefig(os.path.join(output_dir, 'stat.png'), bbox_inches='tight')
-    plt.close(f)
-
-
+    if args.abnormal != -1: 
+        Y_raw = Y
+        Y = np.concatenate([y.cpu().data.numpy() for y in Y]) == args.abnormal 
+        # print("[%d / %d] abnormal used." % (Y.sum(), len(Y)))
+        Y_hat = np.concatenate([y.cpu().data.numpy() for y in Y_hat])
+        precision, recall, thresholds = precision_recall_curve(Y, Y_hat)
+        auc_ = auc(recall, precision)
+        print("AUC = ", auc_, np.sum(Y))
+        plt.plot(recall, precision)
+        plt.savefig("output/abnormal_%s_auc.png" % args.abnormal)
+    
+    recon_error = float(torch.sum(torch.stack(rec_errors)).cpu().data.numpy()) / len(ds_test) / 3 / args.img_size / args.img_size
+    print('reconstruction error={}'.format(recon_error))
 
 ##########################################################################################################
 ## Other
@@ -939,15 +957,6 @@ def print_gpus():
     for l in tmp:
         print(l, end = '')
 
-
-def get_free_gpu():
-    os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
-    memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
-    free_gpu = np.argmax(memory_available)
-    print('set gpu', free_gpu, 'with', np.max(memory_available), 'mb')
-    return free_gpu
-
-
 def set_gpu(gpu):
     torch.cuda.set_device('cuda:{}'.format(gpu))
     # os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
@@ -986,47 +995,29 @@ def to_named_dict(ns):
         d[k] = v
     return d
 
-
-def merge_dicts(a, b, c):
-    d = {}
-    d.update(a)
-    d.update(b)
-    d.update(c)
-    return d
-
-
 ##########################################################################################################
 ## Main
 
 def main():
 
-    # print_gpus()
-
-    fs_prefix = './' 
-
-    # run
     opt = {'job_id': int(0), 'status': 'open'}
-
     args = parse_args()
     args = pygrid.overwrite_opt(args, opt)
     args = to_named_dict(args)
-    output_dir = pygrid.get_output_dir(get_exp_id(__file__), fs_prefix='./') if args.output_dir == "default" else ("output/train_svhn/" + args.output_dir)
+    path_check_point = None if args.load_checkpoint == "" else args.load_checkpoint
+    output_dir = pygrid.get_output_dir(get_exp_id(__file__), fs_prefix='./') if args.output_dir == "default" else ("output/train_%s/" %  + args.output_dir)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         os.makedirs(output_dir + '/samples')
         os.makedirs(output_dir + '/ckpt')
 
-    copy_source(__file__, output_dir)
-
-    if args.train_mode:
+    if args.mode == "train":
         # training mode
-        path_check_point = None#'/home/kenny/extend/latent-space-flow-prior/output/train_svhn3/2021-07-24-03-48-20_fid=23.14/ckpt/ckpt_000040.pth'
+        copy_source(__file__, output_dir)
         train(args, output_dir, path_check_point)
-    else:
+    elif args.mode == "test":
         # testing mode
-        path_check_point = '/home/kenny/extend/latent-space-flow-prior/output/train_svhn/2021-08-17-00-02-28/ckpt/ckpt_000071.pth'
         test(args, output_dir, path_check_point)
-
 
 if __name__ == '__main__':
     main()

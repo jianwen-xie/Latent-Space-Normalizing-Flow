@@ -2,3 +2,4 @@ tmp
 data/
 output/
 __pycache__/
+local/
