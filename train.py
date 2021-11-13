@@ -322,10 +322,20 @@ def train(args, output_dir, path_check_point):
     ## data
 
     ds_train, ds_val = get_dataset(args)
-    if args.incomplete_train: 
+    if args.incomplete_train == 1: 
         masks = sio.loadmat('./data/celebA_masks_10000_3_50.mat')['masks']
         ds_train = IncompleteDataset(ds_train, masks, args.data_size)
-
+    elif args.incomplete_train >= 0: 
+        generate_size = min(len(ds_train), args.data_size)
+        masks = np.ones((generate_size, 3, args.img_size, args.img_size))
+        patch_size, num_patch = 8, args.incomplete_train 
+        rad1 = np.random.randint(0, args.img_size-patch_size, size=(generate_size, num_patch, 2))
+        for i in range(generate_size): 
+            for j in range(num_patch): 
+                masks[i, :, rad1[i, j, 0]:rad1[i, j, 0]+patch_size, rad1[i, j, 1]:rad1[i, j, 1]+patch_size] = 0
+        print("Use %d patch: %.4f/100 is covered." % (j+1, 1 - masks.mean()))
+        ds_train = IncompleteDataset(ds_train, masks, args.data_size)
+        
     logger.info('len(ds_train)={}'.format(len(ds_train)))
     logger.info('len(ds_val)={}'.format(len(ds_val)))
 
