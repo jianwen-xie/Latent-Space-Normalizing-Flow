@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
     parser.add_argument('--device', type=int, default=0, help='training or test mode')
     parser.add_argument('--output_dir', type=str, default="default", help='training or test mode')
-    parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'celeba', 'celeba_crop'])
+    parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'celeba', 'celeba_crop', 'mnist', 'mnist_ad'])
     parser.add_argument('--incomplete_train', type=int, default=0, help='training or test mode')
     parser.add_argument('--data_size', type=int, default=1000000)
     parser.add_argument('--img_size', default=32, type=int)
@@ -149,6 +149,58 @@ class IncompleteCollator(object):
 def get_dataset(args):
 
     fs_prefix = './'
+
+    if args.dataset == 'mnist':
+        import torchvision.transforms as transforms
+        ds_train = torchvision.datasets.MNIST(fs_prefix + 'data/{}'.format(args.dataset), download=True,
+                                             transform=transforms.Compose([
+                                             transforms.Resize(args.img_size),
+                                             transforms.ToTensor(),
+                                             transforms.Normalize(0.5, 0.5),
+                               ]))
+        if args.abnormal != -1: 
+            Y = [y for (x, y) in ds_train]
+            selection = [i for i, y in enumerate(Y) if y != args.abnormal]
+            ds_train = torch.utils.data.Subset(ds_train, selection)
+        ds_val = torchvision.datasets.MNIST(fs_prefix + 'data/{}'.format(args.dataset), download=True, train=False,
+                                             transform=transforms.Compose([
+                                             transforms.Resize(args.img_size),
+                                             transforms.ToTensor(),
+                                             transforms.Normalize(0.5, 0.5),
+                               ]))
+        if args.data_size < 10000:
+            ds_train = torch.utils.data.Subset(ds_train, np.arange(args.data_size))
+        return ds_train, ds_val
+
+    if args.dataset == "mnist_ad": 
+
+        assert args.abnormal != -1 
+        data = np.load('data/mnist.npz')
+
+        full_x_data = np.concatenate([data['x_train'], data['x_test'], data['x_valid']], axis=0).reshape(-1, 1, 28, 28) * 2 - 1
+        full_y_data = np.concatenate([data['y_train'], data['y_test'], data['y_valid']], axis=0)
+
+        normal_x_data = full_x_data[full_y_data!= args.abnormal]
+        normal_y_data = full_y_data[full_y_data!= args.abnormal]
+
+        inds = np.random.permutation(normal_x_data.shape[0])
+        normal_x_data = normal_x_data[inds]
+        normal_y_data = normal_y_data[inds]
+
+        index = int(normal_x_data.shape[0]*0.8)
+
+        training_x_data = normal_x_data[:min(index, args.data_size)]
+        training_y_data = normal_y_data[:min(index, args.data_size)]
+
+        testing_x_data = np.concatenate([normal_x_data[index:], full_x_data[full_y_data == args.abnormal]], axis=0)
+        testing_y_data = np.concatenate([normal_y_data[index:], full_y_data[full_y_data == args.abnormal]], axis=0)
+        inds = np.random.permutation(testing_x_data.shape[0])
+        testing_x_data = testing_x_data[inds]
+        testing_y_data = testing_y_data[inds]
+
+        ds_train = torch.utils.data.TensorDataset(torch.Tensor(training_x_data), torch.Tensor(training_y_data))
+        ds_val = torch.utils.data.TensorDataset(torch.Tensor(testing_x_data), torch.Tensor(testing_y_data))
+        return ds_train, ds_val
 
     if args.dataset == 'svhn':
         import torchvision.transforms as transforms
@@ -325,7 +377,7 @@ def train(args, output_dir, path_check_point):
     if args.incomplete_train == 1: 
         masks = sio.loadmat('./data/celebA_masks_10000_3_50.mat')['masks']
         ds_train = IncompleteDataset(ds_train, masks, args.data_size)
-    elif args.incomplete_train >= 0: 
+    elif args.incomplete_train > 1: 
         generate_size = min(len(ds_train), args.data_size)
         masks = np.ones((generate_size, 3, args.img_size, args.img_size), dtype=np.float32)
         patch_size, num_patch = 8, args.incomplete_train 
@@ -342,7 +394,7 @@ def train(args, output_dir, path_check_point):
     dataloader_train = torch.utils.data.DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0)
     # dataloader_val = torch.utils.data.DataLoader(ds_val, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
-    assert len(ds_train) >= args.n_fid_samples
+    args.n_fid_samples = min(len(ds_train), args.n_fid_samples)
     to_range_0_1 = lambda x: (x + 1.) / 2.
     ds_fid = torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu()
     fid_calculator = Fid_calculator(args, ds_fid)
@@ -700,6 +752,19 @@ def print_all_latent(netG, netF, args):
     path = 'output/generate_x_flow_rand_celeba.png'.format(args.output_dir)
     torchvision.utils.save_image(x_samples, path, normalize=True, nrow=20)
 
+def print_grid(netG, netF, args): 
+    to_range_0_1 = lambda x: (x + 1.) / 2.
+    z_line = []
+    for x, y in itertools.product(np.linspace(-1, 1, 20), np.linspace(-1, 1, 20)):
+        z_line.append([x,y])
+    z_sample = torch.from_numpy(np.array(z_line)).float().to(args.devices)
+    z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(
+        int(z_sample.shape[0])).to(args.devices), reverse=True)
+    x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+    x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+    path = 'output/generate_grid.png'.format(args.output_dir)
+    torchvision.utils.save_image(x_samples, path, normalize=True, nrow=20)
+
 def print_intepolation(netG, netF, args): 
     to_range_0_1 = lambda x: (x + 1.) / 2.
     z_sample = torch.randn(20, args.nz, 1, 1).to(args.devices)
@@ -755,9 +820,10 @@ def test(args, output_dir, path_check_point):
     to_range_0_1 = lambda x: (x + 1.) / 2.
     ds_train, ds_test = get_dataset(args)
     real_m = None
-    args.tasks = ["generate_all"]
+    args.tasks = ["incomplete"]
     if "generate_all" in args.tasks: 
         print_all_latent(netG, netF, args)
+        print_grid(netG, netF, args)
         n = args.n_fid_samples
         print('computing fid with {} samples'.format(n))
         eval_flag()
@@ -841,31 +907,27 @@ def test(args, output_dir, path_check_point):
 
     if "incomplete" in args.tasks: 
 
-        # random small square:
-        generate_size = args.batch_size // 2
-        masks = np.ones((generate_size * 2, args.img_size, args.img_size))
-        patch_size, num_patch = 8, 20 
-        rad1 = torch.randint(0, args.img_size-patch_size, size=(generate_size, num_patch, 2))
-        for i in range(generate_size): 
-            for j in range(num_patch): 
-                masks[i, rad1[i, j, 0]:rad1[i, j, 0]+patch_size, rad1[i, j, 1]:rad1[i, j, 1]+patch_size] = 0
+        print("do incomplete")
+        # generate_size = args.batch_size // 2
+        # masks = np.ones((generate_size * 2, args.img_size, args.img_size))
+        # patch_size, num_patch = 8, 20 
+        # rad1 = torch.randint(0, args.img_size-patch_size, size=(generate_size, num_patch, 2))
+        # for i in range(generate_size): 
+        #     for j in range(num_patch): 
+        #         masks[i, rad1[i, j, 0]:rad1[i, j, 0]+patch_size, rad1[i, j, 1]:rad1[i, j, 1]+patch_size] = 0
 
-        # random large square: 
-        patch_size, num_patch = 32, 1 
-        rad2 = torch.randint(0, args.img_size-patch_size, size=(generate_size, num_patch, 2))
-        for i in range(generate_size): 
-            for j in range(num_patch): 
-                masks[i+generate_size, rad2[i, j, 0]:rad2[i, j, 0]+patch_size, rad2[i, j, 1]:rad2[i, j, 1]+patch_size] = 0
-        masks = torch.tensor(masks).to(device).unsqueeze(1).repeat(1,3,1,1)
+        # # random large square: 
+        # patch_size, num_patch = 32, 1 
+        # rad2 = torch.randint(0, args.img_size-patch_size, size=(generate_size, num_patch, 2))
+        # for i in range(generate_size): 
+        #     for j in range(num_patch): 
+        #         masks[i+generate_size, rad2[i, j, 0]:rad2[i, j, 0]+patch_size, rad2[i, j, 1]:rad2[i, j, 1]+patch_size] = 0
+        # masks = torch.tensor(masks).to(device).unsqueeze(1).repeat(1,3,1,1)
 
         # constant large square: 
-        generate_size = args.batch_size
-        patch_size, num_patch = 32, 1 
-        rad2 = torch.ones(size=(generate_size, num_patch, 2)) 
-        for i in range(generate_size): 
-            for j in range(num_patch): 
-                masks[i+generate_size, rad2[i, j, 0]:rad2[i, j, 0]+patch_size, rad2[i, j, 1]:rad2[i, j, 1]+patch_size] = 0
-        masks = torch.tensor(masks).to(device).unsqueeze(1).repeat(1,3,1,1)
+        masks = np.ones((args.batch_size, 3, args.img_size, args.img_size))
+        masks[:, :, 20:60, 12:52] = 0
+        masks = torch.tensor(masks).to(device)
 
         rec_errors,x_samples = [], []
         for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
@@ -878,14 +940,16 @@ def test(args, output_dir, path_check_point):
             rec_errors.append(mse(x_hat, x).mean())
             print(rec_errors[-1])
             x_samples.append(x_hat.clamp(min=-1., max=1.).detach().cpu())
-        x_samples = torch.cat([x.cpu(), (x * masks).cpu()] + x_samples)
         path = 'output/incomplete.png'.format(args.output_dir)
-        torchvision.utils.save_image(x_samples, path, normalize=True, nrow=args.batch_size)
+        x, masks = x.cpu(), masks.cpu()
+        torchvision.utils.save_image(torch.cat([x, x * masks] + x_samples), path, normalize=True, nrow=args.batch_size)
 
         for i in range(1, 10): 
-            x_samples[i+2] = x_samples[i+2].masked_fill(1 - masks, x)
+            x_frac = x.clone()
+            x_frac[:, :, 20:60, 12:52] = x_samples[i][:, :, 20:60, 12:52]
+            x_samples[i] = x_frac
         path = 'output/incomplete_true.png'.format(args.output_dir)
-        torchvision.utils.save_image(x_samples, path, normalize=True, nrow=args.batch_size)
+        torchvision.utils.save_image(torch.cat([x, x * masks] + x_samples), path, normalize=True, nrow=args.batch_size)
         
         
 
@@ -1019,7 +1083,7 @@ def main():
     args = pygrid.overwrite_opt(args, opt)
     args = to_named_dict(args)
     path_check_point = None if args.load_checkpoint == "" else args.load_checkpoint
-    output_dir = pygrid.get_output_dir(get_exp_id(__file__), fs_prefix='./') if args.output_dir == "default" else ("output/train_%s/" %  + args.output_dir)
+    output_dir = pygrid.get_output_dir(get_exp_id(__file__), fs_prefix='./') if args.output_dir == "default" else ("output/train_%s/" % args.dataset + args.output_dir)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         os.makedirs(output_dir + '/samples')

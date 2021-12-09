@@ -899,6 +899,19 @@ def print_all_latent(netG, netF, args):
     path = 'output/generate_x_flow.png'.format(args.output_dir)
     torchvision.utils.save_image(x_samples, path, normalize=True, nrow=10)
 
+def print_grid(netG, netF, args): 
+    to_range_0_1 = lambda x: (x + 1.) / 2.
+    z_line = []
+    for x, y in itertools.product(np.linspace(-1, 1, 20), np.linspace(-1, 1, 20)):
+        z_line.append([x,y])
+    z_sample = torch.from_numpy(np.array(z_line)).float().to(args.devices)
+    z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(
+        int(z_sample.shape[0])).to(args.devices), reverse=True)
+    x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+    x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+    path = 'output/generate_grid.png'.format(args.output_dir)
+    torchvision.utils.save_image(x_samples, path, normalize=True, nrow=20)
+
 def print_intepolation(netG, netF, args): 
     to_range_0_1 = lambda x: (x + 1.) / 2.
     z_sample = torch.randn(20, args.nz, 1, 1).to(args.devices)
@@ -950,6 +963,7 @@ def test(args, output_dir, path_check_point):
 
     if args.generate: 
         print_all_latent(netG, netF, args)
+        print_grid(netG, netF, args)
         n = args.n_fid_samples
         print('computing fid with {} samples'.format(n))
         eval_flag()
