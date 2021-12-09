@@ -101,7 +101,7 @@ class _netG(nn.Module):
 
 class _netG_mnist(nn.Module):
     def __init__(self, args):
-        super(_netG, self).__init__()
+        super(_netG_mnist, self).__init__()
         self.dim_c, self.dim_z = args.nc, args.nz
         self.width = self.height = args.img_size
 
