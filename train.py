@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument('--img_size', default=32, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
     parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
-    parser.add_argument('--nc', default=3)
+    parser.add_argument('--nc', type=int, default=3)
     parser.add_argument('--ngf',type=int,  default=64, help='feature dimensions of generator')
 
     parser.add_argument('--g_llhd_sigma', type=float, default=0.3, help='prior of factor analysis')
@@ -89,8 +89,8 @@ def parse_args():
     parser.add_argument('--g_decay',  default=0, help='weight decay for gen')
     parser.add_argument('--f_decay', default=0, help='weight decay for flow')
 
-    parser.add_argument('--g_gamma', default=0.998, help='lr decay for gen')
-    parser.add_argument('--f_gamma', default=0.998, help='lr decay for flow')
+    parser.add_argument('--g_gamma', type=float, default=0.998, help='lr decay for gen')
+    parser.add_argument('--f_gamma', type=float, default=0.998, help='lr decay for flow')
 
     parser.add_argument('--g_beta1', default=0.5, type=float)
     parser.add_argument('--g_beta2', default=0.999, type=float)
@@ -349,8 +349,10 @@ class Fid_calculator(object):
         training_data = training_data.repeat(1,3 if training_data.shape[1] == 1 else 1,1,1)
         print("precalculate FID distribution for training data...")
         self.real_m, self.real_s = pfw.get_stats(training_data)
+        print(self.real_m.mean(), self.real_s.mean())
 
     def fid(self, data): 
+        print(self.real_m.mean(), self.real_s.mean())
         data = data.repeat(1,3 if data.shape[1] == 1 else 1,1,1) 
         return pfw.fid(data, real_m=self.real_m, real_s=self.real_s)
 
@@ -872,7 +874,7 @@ def test(args, output_dir, path_check_point):
         fid = pfw.fid(x_samples, real_m=real_m, real_s=real_s)
         print('fid=%.4f'%(fid))
         
-    dataloader_test = torch.utils.data.DataLoader(ds_test, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    dataloader_test = torch.utils.data.DataLoader(ds_test, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     mse = nn.MSELoss(reduction='none')
     def sample_langevin_post_z_with_flow(z, x, netG, netF, mask=None):
@@ -932,8 +934,10 @@ def test(args, output_dir, path_check_point):
         rec_errors,x_samples = [], []
         for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
             x = x.to(device)
+            np.save("output/incomplete_truth.npy", x.cpu().data.numpy())
+            print(x.shape)
             break 
-        for i in range(10):
+        for i in range(5):
             z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
             z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, mask=None if i==0 else masks)[0]
             x_hat = netG(z_g_k.detach())
@@ -956,7 +960,7 @@ def test(args, output_dir, path_check_point):
     from sklearn.metrics import precision_recall_curve, auc
     import matplotlib.pyplot as plt 
 
-    Y_hat, Y, rec_errors = [], [], []
+    Y_hat, Y, rec_errors, Z, Zg = [], [], [], [], []
     # print('anomaly detection starts for %i' % args.abnormal)
     for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
         x = x.to(device)
@@ -966,11 +970,32 @@ def test(args, output_dir, path_check_point):
         z1, logdet, _ = netF(torch.squeeze(z_g_k), objective=torch.zeros(int(z_g_k.shape[0])).to(device), init=False)
         # x_hat = to_range_0_1(x_hat).clamp(min=0., max=1.)
         rec_errors.append(mse(x_hat, x).sum())
+        Y.append(y) 
+        if "visual_2dim" in args.tasks:
+            Z.append(z1)
+            Zg.append(z_g_k)
         if args.abnormal is not None: 
             g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * torch.sum(torch.pow(x - x_hat, 2), (3,2,1))
             f_log_lkhd = -((-0.5 * (z1 ** 2)).flatten(1).sum(-1) + np.log(2 * np.pi) + logdet)
             Y_hat.append(g_log_lkhd + f_log_lkhd)
-            Y.append(y) 
+        if i == 2: 
+            torchvision.utils.save_image(torch.cat([x[:20], x_hat[:20]]), "output/2dim_recon.png", normalize=True, nrow=20)
+            break
+
+    if "visual_2dim" in args.tasks:
+
+        loc = np.concatenate([z.cpu().data.numpy() for z in Z])
+        print(loc.shape)
+        label = np.concatenate([y.cpu().data.numpy() for y in Y])
+        colormap = ["r", "g", "b", "c", "m", "y", "lime", "gold", "pink", "tomato"]
+        color = [colormap[i] for i in label]
+        plt.scatter(loc[:,0], loc[:,1], c=color, s=1)
+        plt.savefig("output/2dim_vis_z1.png")
+
+        plt.clf()
+        loc = np.concatenate([z.cpu().data.numpy() for z in Zg])
+        plt.scatter(loc[:,0,0,0], loc[:,1,0,0], c=color, s=1)
+        plt.savefig("output/2dim_vis_zg.png")
 
     if args.abnormal != -1: 
         Y_raw = Y
