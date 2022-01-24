@@ -99,6 +99,38 @@ class _netG(nn.Module):
     def forward(self, z):
         return self.gen(z)
 
+class _netG_cifar10(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+
+        f = get_activation(args.g_activation, args)
+
+        self.gen = nn.Sequential(
+            nn.ConvTranspose2d(args.nz, args.ngf*8, 8, 1, 0, bias = not args.g_batchnorm),
+            nn.BatchNorm2d(args.ngf*8) if args.g_batchnorm else nn.Identity(),
+            f,
+
+            nn.ConvTranspose2d(args.ngf*8, args.ngf*4, 4, 2, 1, bias = not args.g_batchnorm),
+            nn.BatchNorm2d(args.ngf*4) if args.g_batchnorm else nn.Identity(),
+            f,
+
+            nn.ConvTranspose2d(args.ngf*4, args.ngf*2, 4, 2, 1, bias = not args.g_batchnorm),
+            nn.BatchNorm2d(args.ngf*2) if args.g_batchnorm else nn.Identity(),
+            f,
+
+            # if the image size is of 64 x 64, uncomment this layer
+            #nn.ConvTranspose2d(args.ngf*2, args.ngf*1, 4, 2, 1, bias = not args.g_batchnorm),
+            #nn.BatchNorm2d(args.ngf*1) if args.g_batchnorm else nn.Identity(),
+            #f,
+
+            nn.ConvTranspose2d(args.ngf*2, args.nc, 3, 1, 1),
+            nn.Tanh()
+        )    
+    
+    def forward(self, z):
+        return self.gen(z)
+
+
 class _netG_mnist(nn.Module):
     def __init__(self, args):
         super(_netG_mnist, self).__init__()
