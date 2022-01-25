@@ -54,19 +54,19 @@ def parse_args():
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
     parser.add_argument('--device', type=int, default=0, help='training or test mode')
     parser.add_argument('--output_dir', type=str, default="default", help='training or test mode')
-    parser.add_argument('--dataset', type=str, default='cifar10', choices=['svhn', 'celeba', 'celeba_crop', 'mnist', 'mnist_ad', 'cifar10'])
-    parser.add_argument('--incomplete_train', type=int, default=0, help='training or test mode')
+    parser.add_argument('--dataset', type=str, default='celeba_crop', choices=['svhn', 'celeba', 'celeba_crop', 'mnist', 'mnist_ad', 'cifar10'])
+    parser.add_argument('--incomplete_train', type=int, default=1, help='training or test mode')
     parser.add_argument('--data_size', type=int, default=1000000)
-    parser.add_argument('--img_size', default=32, type=int)
+    parser.add_argument('--img_size', default=64, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
-    parser.add_argument('--nz', type=int, default=128, help='size of the latent z vector')
+    parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
     parser.add_argument('--nc', type=int, default=3)
     parser.add_argument('--ngf',type=int,  default=128, help='feature dimensions of generator')
 
     parser.add_argument('--g_llhd_sigma', type=float, default=0.3, help='prior of factor analysis')
     parser.add_argument('--g_activation', type=str, default='lrelu')
     parser.add_argument('--g_activation_leak', type=float, default=0.2)
-    parser.add_argument('--g_l_steps', type=int, default=40, help='number of langevin steps')
+    parser.add_argument('--g_l_steps', type=int, default=20, help='number of langevin steps')
     parser.add_argument('--g_l_step_size', type=float, default=0.1, help='stepsize of langevin') # 0.1
     parser.add_argument('--g_l_with_noise', default=True, type=bool, help='noise term of langevin')
     parser.add_argument('--g_batchnorm', default=False, type=bool, help='batch norm')
@@ -77,8 +77,8 @@ def parse_args():
     parser.add_argument('--f_width', default=64, type=int, help='')
     parser.add_argument('--f_flow_coupling', default=1, type=int, help='')
 
-    parser.add_argument('--g_lr', default=0.00038, type=float) # 0.0004
-    parser.add_argument('--f_lr', default=0.00038, type=float) # 0.0004
+    parser.add_argument('--g_lr', default=0.0003, type=float) # 0.0004
+    parser.add_argument('--f_lr', default=0.0003, type=float) # 0.0004
 
     parser.add_argument('--g_is_grad_clamp', type=bool, default=False, help='whether doing the gradient clamp')
     parser.add_argument('--f_is_grad_clamp', type=bool, default=False, help='whether doing the gradient clamp')
@@ -105,7 +105,7 @@ def parse_args():
     parser.add_argument('--n_ckpt', type=int, default=1, help='save ckpt each n epochs')
     parser.add_argument('--n_metrics', type=int, default=1, help='fid each n epochs')    #
     parser.add_argument('--n_stats', type=int, default=1, help='stats each n epochs')
-    parser.add_argument('--n_fid_samples', type=int, default=50000)
+    parser.add_argument('--n_fid_samples', type=int, default=0)
 
 
     return parser.parse_args()
@@ -363,12 +363,17 @@ class Fid_calculator(object):
 
     def __init__(self, args, training_data):
         pfw.set_config(batch_size=args.batch_size, device=args.device)
-        training_data = training_data.repeat(1,3 if training_data.shape[1] == 1 else 1,1,1)
-        print("precalculate FID distribution for training data...")
-        self.real_m, self.real_s = pfw.get_stats(training_data)
-        print(self.real_m.mean(), self.real_s.mean())
+        if training_data is None: 
+            self.real_m, self.real_s = None, None
+        else: 
+            training_data = training_data.repeat(1,3 if training_data.shape[1] == 1 else 1,1,1)
+            print("precalculate FID distribution for training data...")
+            self.real_m, self.real_s = pfw.get_stats(training_data)
+            print(self.real_m.mean(), self.real_s.mean())
 
     def fid(self, data): 
+        if self.real_m is None: 
+            return 0
         print(self.real_m.mean(), self.real_s.mean())
         data = data.repeat(1,3 if data.shape[1] == 1 else 1,1,1) 
         return pfw.fid(data, real_m=self.real_m, real_s=self.real_s)
@@ -413,10 +418,13 @@ def train(args, output_dir, path_check_point):
     dataloader_train = torch.utils.data.DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0)
     # dataloader_val = torch.utils.data.DataLoader(ds_val, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
-    args.n_fid_samples = min(len(ds_train), args.n_fid_samples)
-    to_range_0_1 = lambda x: (x + 1.) / 2.
-    ds_fid = torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu()
-    fid_calculator = Fid_calculator(args, ds_fid)
+    if args.n_fid_samples > 0:
+        args.n_fid_samples = min(len(ds_train), args.n_fid_samples)
+        to_range_0_1 = lambda x: (x + 1.) / 2.
+        ds_fid = torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu()
+        fid_calculator = Fid_calculator(args, ds_fid)
+    else: 
+        fid_calculator = Fid_calculator(args, None)
     def plot(p, x):
         return torchvision.utils.save_image(torch.clamp(x, -1., 1.), p, normalize=True, nrow=int(np.sqrt(args.batch_size)))
 
