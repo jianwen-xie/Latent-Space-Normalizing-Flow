@@ -519,7 +519,7 @@ def train(args, output_dir, path_check_point):
         netF.load_state_dict(ckp['netF'])
         optG.load_state_dict(ckp['optG'])
         optF.load_state_dict(ckp['optF'])
-        epoch_start=ckp['epoch']+1
+        epoch_start=ckp['epoch']
         print("We resume the training from the last epoch.")
         fid_best = math.inf
     else:
@@ -547,87 +547,88 @@ def train(args, output_dir, path_check_point):
 
     for epoch in range(epoch_start, args.n_epochs):
 
-        for i, x_input in enumerate(dataloader_train, 0):
+        if epoch_start == 0 or epoch > epoch_start:
+            for i, x_input in enumerate(dataloader_train, 0):
 
-            if args.incomplete_train is not None: 
-                x_gt, y, masks = x_input
-                x = x_gt * masks 
-            else: 
-                x, y = x_input
-                masks = torch.ones(1)
-            train_flag()
+                if args.incomplete_train is not None: 
+                    x_gt, y, masks = x_input
+                    x = x_gt * masks 
+                else: 
+                    x, y = x_input
+                    masks = torch.ones(1)
+                train_flag()
 
-            x = x.to(device)
-            masks = masks.to(device)
-            batch_size = x.shape[0]
+                x = x.to(device)
+                masks = masks.to(device)
+                batch_size = x.shape[0]
 
-            # Initialize chain
-            z_g_0 = sample_p_0(n=batch_size)
-            z_f_0 = sample_p_0(n=batch_size)
+                # Initialize chain
+                z_g_0 = sample_p_0(n=batch_size)
+                z_f_0 = sample_p_0(n=batch_size)
 
-            z_g_k, z_g_grad_norm, z_f_grad_norm = sample_langevin_post_z_with_flow(Variable(z_g_0), x, netG, netF, verbose=False, mask=masks)
+                z_g_k, z_g_grad_norm, z_f_grad_norm = sample_langevin_post_z_with_flow(Variable(z_g_0), x, netG, netF, verbose=False, mask=masks)
 
-            # Learn generator
-            optG.zero_grad()
+                # Learn generator
+                optG.zero_grad()
 
-            x_hat = netG(z_g_k.detach())
-            loss_g = (mse(x_hat, x) * masks).sum() / batch_size
-            loss_g.backward()
-            grad_norm_g = get_grad_norm(netG.parameters())
-            if args.g_is_grad_clamp:
-                torch.nn.utils.clip_grad_norm(netG.parameters(), opt.g_max_norm)
-            optG.step()
-            #if jj % 20 == 0:
-            #    logger.info('Train generator: loss_g={:8.3f}'.format(loss_g))
-
-
-            # Learn prior flow
-            optF.zero_grad()
-
-            z1, logdet, _ = netF(torch.squeeze(z_g_k), objective=torch.zeros(int(z_g_k.shape[0])).to(device), init=False)
-            prior_ll = -0.5 * (z1 ** 2)
-            prior_ll = prior_ll.flatten(1).sum(-1) + np.log(2 * np.pi)
-            ll = prior_ll + logdet
-            loss_f = -ll.mean()
-            loss_f.backward()
-
-            if args.f_is_grad_clamp:
-                 torch.nn.utils.clip_grad_norm_(netF.parameters(), args.f_max_norm)
-            optF.step()
+                x_hat = netG(z_g_k.detach())
+                loss_g = (mse(x_hat, x) * masks).sum() / batch_size
+                loss_g.backward()
+                grad_norm_g = get_grad_norm(netG.parameters())
+                if args.g_is_grad_clamp:
+                    torch.nn.utils.clip_grad_norm(netG.parameters(), opt.g_max_norm)
+                optG.step()
+                #if jj % 20 == 0:
+                #    logger.info('Train generator: loss_g={:8.3f}'.format(loss_g))
 
 
-            # Printout
-            if i % args.n_printout == 0:
-                    # x_0 = netG(z_e_0)
-                    # x_k = netG(z_e_k)
+                # Learn prior flow
+                optF.zero_grad()
 
-                    # en_neg_2 = energy(netE(z_e_k)).mean()
-                    # en_pos_2 = energy(netE(z_g_k)).mean()
+                z1, logdet, _ = netF(torch.squeeze(z_g_k), objective=torch.zeros(int(z_g_k.shape[0])).to(device), init=False)
+                prior_ll = -0.5 * (z1 ** 2)
+                prior_ll = prior_ll.flatten(1).sum(-1) + np.log(2 * np.pi)
+                ll = prior_ll + logdet
+                loss_f = -ll.mean()
+                loss_f.backward()
 
-                    # prior_moments = '[{:8.2f}, {:8.2f}, {:8.2f}]'.format(z_e_k.mean(), z_e_k.std(), z_e_k.abs().max())
-                    # posterior_moments = '[{:8.2f}, {:8.2f}, {:8.2f}]'.format(z_g_k.mean(), z_g_k.std(), z_g_k.abs().max())
+                if args.f_is_grad_clamp:
+                    torch.nn.utils.clip_grad_norm_(netF.parameters(), args.f_max_norm)
+                optF.step()
 
-                    logger.info('{} {:5d}/{:5d} {:5d}/{:5d} '.format(job_id, epoch, args.n_epochs, i, len(dataloader_train)) +
-                        'loss_g={:8.3f}, '.format(loss_g) +
-                        'loss_f={:8.3f}, '.format(loss_f) +
-                        #'|grad_g|={:8.2f}, '.format(grad_norm_g) +
-                        '|z_g_grad|={:7.3f}, '.format(z_g_grad_norm) +
-                        '|z_f_grad|={:7.3f}, '.format(z_f_grad_norm) +
-                        #'posterior_moments={}, '.format(posterior_moments) +
-                        'fid={:8.2f}, '.format(fid) +
-                        'fid_best={:8.2f}'.format(fid_best))
 
-                    num_step = epoch*len(dataloader_train)+i
-                    tb_writer.add_scalar("train/loss_g", loss_g, num_step)
-                    tb_writer.add_scalar("train/loss_f", loss_f, num_step)
-                    tb_writer.add_scalar("train/z_g_grad_norm", z_g_grad_norm, num_step)
-                    tb_writer.add_scalar("train/z_f_grad_norm", z_f_grad_norm, num_step)
-                    tb_writer.add_scalar("train/fid_best", fid_best, num_step)
+                # Printout
+                if i % args.n_printout == 0:
+                        # x_0 = netG(z_e_0)
+                        # x_k = netG(z_e_k)
 
-        # Schedule
-        # lr_scheduleE.step(epoch=epoch)
-        lr_scheduleG.step(epoch=epoch)
-        lr_scheduleF.step(epoch=epoch)
+                        # en_neg_2 = energy(netE(z_e_k)).mean()
+                        # en_pos_2 = energy(netE(z_g_k)).mean()
+
+                        # prior_moments = '[{:8.2f}, {:8.2f}, {:8.2f}]'.format(z_e_k.mean(), z_e_k.std(), z_e_k.abs().max())
+                        # posterior_moments = '[{:8.2f}, {:8.2f}, {:8.2f}]'.format(z_g_k.mean(), z_g_k.std(), z_g_k.abs().max())
+
+                        logger.info('{} {:5d}/{:5d} {:5d}/{:5d} '.format(job_id, epoch, args.n_epochs, i, len(dataloader_train)) +
+                            'loss_g={:8.3f}, '.format(loss_g) +
+                            'loss_f={:8.3f}, '.format(loss_f) +
+                            #'|grad_g|={:8.2f}, '.format(grad_norm_g) +
+                            '|z_g_grad|={:7.3f}, '.format(z_g_grad_norm) +
+                            '|z_f_grad|={:7.3f}, '.format(z_f_grad_norm) +
+                            #'posterior_moments={}, '.format(posterior_moments) +
+                            'fid={:8.2f}, '.format(fid) +
+                            'fid_best={:8.2f}'.format(fid_best))
+
+                        num_step = epoch*len(dataloader_train)+i
+                        tb_writer.add_scalar("train/loss_g", loss_g, num_step)
+                        tb_writer.add_scalar("train/loss_f", loss_f, num_step)
+                        tb_writer.add_scalar("train/z_g_grad_norm", z_g_grad_norm, num_step)
+                        tb_writer.add_scalar("train/z_f_grad_norm", z_f_grad_norm, num_step)
+                        tb_writer.add_scalar("train/fid_best", fid_best, num_step)
+
+            # Schedule
+            # lr_scheduleE.step(epoch=epoch)
+            lr_scheduleG.step(epoch=epoch)
+            lr_scheduleF.step(epoch=epoch)
 
         # Metrics
         if epoch == args.n_epochs or epoch % args.n_metrics == 0:
