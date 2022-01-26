@@ -678,10 +678,10 @@ def train(args, output_dir, path_check_point):
                 total_loss /= len(ds_train)
                 recovery_loss /= len(ds_train)
                 unmasked_loss /= len(ds_train)
-                print("Recovery check: total/recovery/unmasked loss: %.4f/%.4f/%.4f" % (total_loss*10000, recovery_loss*10000, unmasked_loss*10000))
+                logger.info("Recovery check: total/recovery/unmasked loss: %.4f/%.4f/%.4f" % (total_loss*10000, recovery_loss*10000, unmasked_loss*10000))
                 tb_writer.add_scalar("incomplete/total_loss", total_loss, epoch)
-                tb_writer.add_scalar("incomplete/recovery_loss", total_loss, epoch)
-                tb_writer.add_scalar("incomplete/unmasked_loss", total_loss, epoch)
+                tb_writer.add_scalar("incomplete/recovery_loss", recovery_loss, epoch)
+                tb_writer.add_scalar("incomplete/unmasked_loss", unmasked_loss, epoch)
 
             # plot
             with torch.no_grad():
