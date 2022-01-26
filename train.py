@@ -130,7 +130,7 @@ class IncompleteDataset(torch.utils.data.Dataset):
         return x, y, torch.from_numpy(self.masks[idx]).to(x.device)
     def generate_mask(self, mask_type):
         patchs = np.load("data/masks_gt.npz")
-        ratio = {10: 7, 20: 15, 30: 24, 40: 35, 50: 48, 55: 56, 60: 65, 65: 76, 70: 90, 75: 108, 80: 134, 85: 176, 90: 267}
+        ratio = {10: 7, 20: 15, 30: 24, 40: 35, 50: 48, 55: 56, 60: 65, 65: 76, 70: 90, 75: 108, 80: 134, 85: 176, 90: 250}
         if mask_type[:4] == "salt":
             num_patch = ratio[int(mask_type[5:])]
             patch_size = 8
@@ -146,7 +146,7 @@ class IncompleteDataset(torch.utils.data.Dataset):
             rad1 = patchs["single_mask_size_%d" % patch_size]
             for i in range(self.data_size): 
                 masks[i, :, rad1[i, 0]:rad1[i, 0]+patch_size, rad1[i, 1]:rad1[i, 1]+patch_size] = 0
-            print("Use single mask size %d*%d" % patch_size)
+            print("Use single mask size %d" % patch_size)
         elif mask_type == "ot_mask": 
             return sio.loadmat('./data/celebA_masks_10000_3_50.mat')['masks']
         else:
@@ -670,7 +670,7 @@ def train(args, output_dir, path_check_point):
                     z_g_0 = sample_p_0(n=batch_size)
                     z_g_k, z_g_grad_norm, z_f_grad_norm = sample_langevin_post_z_with_flow(Variable(z_g_0), x, netG, netF, verbose=False, mask=masks)
                     x_hat = netG(z_g_k.detach())
-                    loss = mse(x_hat, x_gt)
+                    loss = mse(x_hat, x_gt).detach()
                     num_unmasked_pixel = masks.sum()
                     total_loss += loss.mean() * batch_size
                     recovery_loss += (loss * (~masks)).sum() / (batch_size * 3 * 64 * 64 - num_unmasked_pixel) * batch_size

@@ -55,8 +55,8 @@ def parse_args():
     parser.add_argument('--device', type=int, default=0, help='training or test mode')
     parser.add_argument('--output_dir', type=str, default="default", help='training or test mode')
     parser.add_argument('--dataset', type=str, default='celeba_crop', choices=['svhn', 'celeba', 'celeba_crop', 'mnist', 'mnist_ad', 'cifar10'])
-    parser.add_argument('--incomplete_train', type=int, default=20, help='training or test mode')
-    parser.add_argument('--data_size', type=int, default=1000000)
+    parser.add_argument('--incomplete_train', type=str, default="salt_50", help='training or test mode')
+    parser.add_argument('--data_size', type=int, default=10000)
     parser.add_argument('--img_size', default=64, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
     parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
@@ -140,37 +140,43 @@ def parse_args():
 
 class IncompleteDataset(torch.utils.data.Dataset):
 
-    def __init__(self, dataset, masks, data_size):
+    def __init__(self, dataset, masks, data_size=1000000):
         self.dataset = dataset 
-        self.masks = masks 
         self.data_size = min(data_size, len(self.dataset))
-        if masks.shape[0] < self.data_size: 
+        self.masks = self.generate_mask(masks) if type(masks) is str else masks 
+        if self.masks.shape[0] < self.data_size: 
             print("Warning! masks is smaller than data_size.")
-            self.data_size = masks.shape[0]
+            self.data_size = self.masks.shape[0]
     def __len__(self):
         return self.data_size
     def __getitem__(self, idx): 
         x, y = self.dataset[idx]
         return x, y, torch.from_numpy(self.masks[idx]).to(x.device)
-
-class IncompleteCollator(object): 
-
-    def __init__(self, args, masks):
-        self.mode = args.incomplete_mode
-    def __call__(self, imgs):
-        if self.mode == -1:
-            return imgs 
-        elif self.mode == 0: 
-            # random small patch 
-            generate_size = imgs.shape[0]
-            masks = np.ones_like(imgs)
-            patch_size, num_patch = 8, 20 
-            rad1 = torch.randint(0, masks.shape[2]-patch_size, size=(generate_size, num_patch, 2))
-            for i in range(generate_size): 
+    def generate_mask(self, mask_type):
+        patchs = np.load("data/masks_gt.npz")
+        ratio = {10: 7, 20: 15, 30: 24, 40: 35, 50: 48, 55: 56, 60: 65, 65: 76, 70: 90, 75: 108, 80: 134, 85: 176, 90: 250}
+        if mask_type[:4] == "salt":
+            num_patch = ratio[int(mask_type[5:])]
+            patch_size = 8
+            rad1 = patchs["salt_pepper_8"]
+            masks = np.ones((self.data_size, 3, 64, 64), dtype=bool)
+            for i in range(self.data_size): 
                 for j in range(num_patch): 
                     masks[i, :, rad1[i, j, 0]:rad1[i, j, 0]+patch_size, rad1[i, j, 1]:rad1[i, j, 1]+patch_size] = 0
-            return imgs, masks 
-     
+            print("Use salt %d patch: %.8f/100 is covered." % (num_patch, 1 - masks.mean()))
+        elif mask_type[:4] == "sing": 
+            patch_size = int(mask_type[5:])
+            masks = np.ones((self.data_size, 3, 64, 64), dtype=bool)
+            rad1 = patchs["single_mask_size_%d" % patch_size]
+            for i in range(self.data_size): 
+                masks[i, :, rad1[i, 0]:rad1[i, 0]+patch_size, rad1[i, 1]:rad1[i, 1]+patch_size] = 0
+            print("Use single mask size %d" % patch_size)
+        elif mask_type == "ot_mask": 
+            return sio.loadmat('./data/celebA_masks_10000_3_50.mat')['masks']
+        else:
+            raise NotImplementedError
+        return masks     
+
 def get_dataset(args):
 
     fs_prefix = './'
@@ -423,24 +429,13 @@ def train(args, output_dir, path_check_point):
     ## data
 
     ds_train, ds_val = get_dataset(args)
-    if args.incomplete_train == 1: 
-        masks = sio.loadmat('./data/celebA_masks_10000_3_50.mat')['masks']
-        ds_train = IncompleteDataset(ds_train, masks, args.data_size)
-    elif args.incomplete_train > 1: 
-        generate_size = min(len(ds_train), args.data_size)
-        masks = np.ones((generate_size, 3, args.img_size, args.img_size), dtype=np.float32)
-        patch_size, num_patch = 8, args.incomplete_train 
-        rad1 = np.random.randint(0, args.img_size-patch_size, size=(generate_size, num_patch, 2))
-        for i in range(generate_size): 
-            for j in range(num_patch): 
-                masks[i, :, rad1[i, j, 0]:rad1[i, j, 0]+patch_size, rad1[i, j, 1]:rad1[i, j, 1]+patch_size] = 0.0
-        print("Use %d patch: %.4f/100 is covered." % (j+1, 1 - masks.mean()))
-        ds_train = IncompleteDataset(ds_train, masks, args.data_size)
+    if args.incomplete_train is not None: 
+        ds_train = IncompleteDataset(ds_train, args.incomplete_train, args.data_size)
         
     logger.info('len(ds_train)={}'.format(len(ds_train)))
     logger.info('len(ds_val)={}'.format(len(ds_val)))
 
-    dataloader_train = torch.utils.data.DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    dataloader_train = torch.utils.data.DataLoader(ds_train, batch_size=args.batch_size, shuffle=(args.incomplete_train is None), num_workers=0)
     # dataloader_val = torch.utils.data.DataLoader(ds_val, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
     if args.n_fid_samples > 0:
@@ -712,9 +707,9 @@ def train(args, output_dir, path_check_point):
 
         for i, x_input in enumerate(dataloader_train, 0):
 
-            if args.incomplete_train: 
-                x, y, masks = x_input
-                x = x * masks 
+            if args.incomplete_train is not None: 
+                x_gt, y, masks = x_input
+                x = x_gt * masks 
             else: 
                 x, y = x_input
                 masks = torch.ones(1)
@@ -726,7 +721,6 @@ def train(args, output_dir, path_check_point):
 
             # Initialize chain
             z_g_0 = sample_p_0(n=batch_size)
-            z_f_0 = sample_p_0(n=batch_size)
 
             if args.prior_type=='flow':
                 z_g_k, z_g_grad_norm, z_f_grad_norm = sample_langevin_post_z_with_flow(Variable(z_g_0), x, netG, netF, verbose=False, mask=masks)
@@ -786,30 +780,6 @@ def train(args, output_dir, path_check_point):
 
             # Printout
             if i % args.n_printout == 0:
-
-                    if args.prior_type == 'flow':
-                        z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
-                        z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
-
-                        with torch.no_grad():
-                            x_k = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
-
-                    elif args.prior_type == 'ebm':
-                        z_e_0 = sample_p_0(n=args.batch_size)
-                        z_e_k, z_e_k_grad_norm = sample_langevin_prior_z(Variable(z_e_0), netE)
-
-                        with torch.no_grad():
-                            x_k = netG(z_e_k)
-
-                    elif args.prior_type == 'gaussian':
-                        z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
-                        with torch.no_grad():
-                            x_k = netG(torch.reshape(z_sample, (z_sample.shape[0], z_sample.shape[1], 1, 1)))
-
-
-                    plot('{}/samples/{:>06d}_x_z_flow_prior.png'.format(output_dir, epoch), x_k)
-                    #torchvision.utils.save_image(x_k, '{}/epoch_{}.png'.format(output_dir, epoch), nrow=int(10))
-
                     # x_0 = netG(z_e_0)
                     # x_k = netG(z_e_k)
 
@@ -882,35 +852,84 @@ def train(args, output_dir, path_check_point):
         # Metrics
         if epoch == args.n_epochs or epoch % args.n_metrics == 0:
 
-            try:
-                eval_flag()
-                def sample_x():
-                    z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
-                    z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
-                    x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
-                    x_samples[x_samples == float("inf")] = 1
-                    x_samples[x_samples == -float("inf")] = 0
-                    x_samples[x_samples != x_samples] = 0
-                    x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
-                    return x_samples
+            
+            if args.n_fid_samples > 0:
+                try:
+                    def sample_x():
+                        z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
+                        z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
+                        x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+                        x_samples[x_samples == float("inf")] = 1
+                        x_samples[x_samples == -float("inf")] = 0
+                        x_samples[x_samples != x_samples] = 0
+                        x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+                        return x_samples
+                    with torch.no_grad():
+                        x_samples = torch.cat([sample_x() for _ in range(int(args.n_fid_samples / args.batch_size))]).detach()
+                    fid = fid_calculator.fid(x_samples)
+
+                except Exception as e:
+                    print(e)
+                    logger.critical(e, exc_info=True)
+                    logger.info('FID failed')
+                    fid = 10000
+                if fid < fid_best:
+                    fid_best = fid
+                logger.info('fid={}'.format(fid))
+                tb_writer.add_scalar("train/fid", fid, epoch)
+            if args.incomplete_train is not None: 
+                total_loss, recovery_loss, unmasked_loss = 0, 0, 0
+                for i, x_input in enumerate(dataloader_train, 0):
+                    x_gt, y, masks = x_input
+                    x_gt = x_gt.to(device)
+                    masks = masks.to(device)
+                    x = x_gt * masks 
+                    batch_size = x.shape[0]
+                    z_g_0 = sample_p_0(n=batch_size)
+                    if args.prior_type=='flow':
+                        z_g_k, z_g_grad_norm, z_f_grad_norm = sample_langevin_post_z_with_flow(Variable(z_g_0), x, netG, netF, verbose=False, mask=masks)
+                    elif args.prior_type=='ebm':
+                        z_g_k, z_g_grad_norm, z_e_grad_norm = sample_langevin_post_z_with_ebm(Variable(z_g_0), x, netG, netE, verbose=False, mask=masks)
+                    elif args.prior_type=='gaussian':
+                        z_g_k, z_g_grad_norm = sample_langevin_post_z_with_gaussian(Variable(z_g_0), x, netG, verbose=False, mask=masks)
+                    x_hat = netG(z_g_k.detach())
+                    loss = mse(x_hat, x_gt).detach()
+                    num_unmasked_pixel = masks.sum()
+                    total_loss += loss.mean() * batch_size
+                    recovery_loss += (loss * (~masks)).sum() / (batch_size * 3 * 64 * 64 - num_unmasked_pixel) * batch_size
+                    unmasked_loss += (loss * masks).sum() / num_unmasked_pixel * batch_size
+                total_loss /= len(ds_train)
+                recovery_loss /= len(ds_train)
+                unmasked_loss /= len(ds_train)
+                print("Recovery check: total/recovery/unmasked loss: %.4f/%.4f/%.4f" % (total_loss*10000, recovery_loss*10000, unmasked_loss*10000))
+                tb_writer.add_scalar("incomplete/total_loss", total_loss, epoch)
+                tb_writer.add_scalar("incomplete/recovery_loss", total_loss, epoch)
+                tb_writer.add_scalar("incomplete/unmasked_loss", total_loss, epoch)
+
+            # plot
+
+            if args.prior_type == 'flow':
+                z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
+                z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
                 with torch.no_grad():
-                    x_samples = torch.cat([sample_x() for _ in range(int(args.n_fid_samples / args.batch_size))]).detach()
-                fid = fid_calculator.fid(x_samples)
+                    x_k = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+            elif args.prior_type == 'ebm':
+                z_e_0 = sample_p_0(n=args.batch_size)
+                z_e_k, z_e_k_grad_norm = sample_langevin_prior_z(Variable(z_e_0), netE)
+                with torch.no_grad():
+                    x_k = netG(z_e_k)
+            elif args.prior_type == 'gaussian':
+                z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
+                with torch.no_grad():
+                    x_k = netG(torch.reshape(z_sample, (z_sample.shape[0], z_sample.shape[1], 1, 1)))
 
-            except Exception as e:
-                print(e)
-                logger.critical(e, exc_info=True)
-                logger.info('FID failed')
-                fid = 10000
 
-            finally:
-                train_flag()
-
-            if fid < fid_best:
-                fid_best = fid
-            logger.info('fid={}'.format(fid))
-            tb_writer.add_scalar("train/fid", fid, epoch)
-
+            plot('{}/samples/{:>06d}_x_z_flow_prior.png'.format(output_dir, epoch), x_k)
+            if args.incomplete_train is not None: 
+                torchvision.utils.save_image(torch.clamp(x_hat, -1., 1.), '{}/samples/reconstruct_{:>06d}.png'.format(output_dir, epoch), normalize=True, nrow=int(np.sqrt(args.batch_size)))
+                torchvision.utils.save_image(torch.clamp(x, -1., 1.), '{}/samples/gt_mask_{:>06d}.png'.format(output_dir, epoch), normalize=True, nrow=int(np.sqrt(args.batch_size)))
+                x_combined = torch.where(masks, x, torch.clamp(x_hat, -1., 1.))
+                torchvision.utils.save_image(x_combined, '{}/samples/combined_{:>06d}.png'.format(output_dir, epoch), normalize=True, nrow=int(np.sqrt(args.batch_size)))
         # Plot
         # if epoch % args.n_plot == 0:
         #
@@ -1095,7 +1114,7 @@ def test(args, output_dir, path_check_point):
         print_grid(netG, netF, args)
         n = args.n_fid_samples
         print('computing fid with {} samples'.format(n))
-        eval_flag()
+        # eval_flag()
         to_range_0_1 = lambda x: (x + 1.) / 2.
         def sample_x():
             z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
@@ -1122,7 +1141,7 @@ def test(args, output_dir, path_check_point):
     if "generate" in args.tasks: 
         n = args.n_fid_samples
         print('computing fid with {} samples'.format(n))
-        eval_flag()
+        # eval_flag()
         def sample_x(return_all=False):
             z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
             z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(
