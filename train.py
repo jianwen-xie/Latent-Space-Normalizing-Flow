@@ -660,7 +660,7 @@ def train(args, output_dir, path_check_point):
                 tb_writer.add_scalar("train/fid", fid, epoch)
             if args.incomplete_train is not None: 
                 total_loss, recovery_loss, unmasked_loss = 0, 0, 0
-                for i, x_input in enumerate(dataloader_train, 0):
+                for i, x_input in tqdm(enumerate(dataloader_train, 0), "reconstruct", len(dataloader_train), False):
                     x_gt, y, masks = x_input
                     x_gt = x_gt.to(device)
                     masks = masks.to(device)
