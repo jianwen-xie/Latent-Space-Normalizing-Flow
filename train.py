@@ -56,8 +56,8 @@ def parse_args():
     parser.add_argument('--device', type=int, default=0, help='training or test mode')
     parser.add_argument('--output_dir', type=str, default="default", help='training or test mode')
     parser.add_argument('--dataset', type=str, default='celeba_crop', choices=['svhn', 'celeba', 'celeba_crop', 'mnist', 'mnist_ad', 'cifar10'])
-    parser.add_argument('--incomplete_train', type=str, default="salt_50", help='training or test mode')
-    parser.add_argument('--data_size', type=int, default=10000)
+    parser.add_argument('--incomplete_train', type=str, default=None, help='training or test mode')
+    parser.add_argument('--data_size', type=int, default=1000000)
     parser.add_argument('--img_size', default=64, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
     parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
@@ -106,7 +106,7 @@ def parse_args():
     parser.add_argument('--n_ckpt', type=int, default=1, help='save ckpt each n epochs')
     parser.add_argument('--n_metrics', type=int, default=1, help='fid each n epochs')    #
     parser.add_argument('--n_stats', type=int, default=1, help='stats each n epochs')
-    parser.add_argument('--n_fid_samples', type=int, default=0)
+    parser.add_argument('--n_fid_samples', type=int, default=50000)
 
 
     return parser.parse_args()
@@ -373,10 +373,16 @@ class Fid_calculator(object):
         if training_data is None: 
             self.real_m, self.real_s = None, None
         else: 
-            training_data = training_data.repeat(1,3 if training_data.shape[1] == 1 else 1,1,1)
-            print("precalculate FID distribution for training data...")
-            self.real_m, self.real_s = pfw.get_stats(training_data)
+            if os.path.exists("data/fid_stat_%s.npz" % args.dataset): 
+                print("load precalculated FID distribution for training data.")
+                data = np.load("data/fid_stat_%s.npz" % args.dataset)
+                self.real_m, self.real_s = data['real_m'], data['real_s']
+            else: 
+                training_data = training_data.repeat(1,3 if training_data.shape[1] == 1 else 1,1,1)
+                print("precalculate FID distribution for training data...")
+                self.real_m, self.real_s = pfw.get_stats(training_data)
             print(self.real_m.mean(), self.real_s.mean())
+
 
     def fid(self, data): 
         if self.real_m is None: 
@@ -417,8 +423,8 @@ def train(args, output_dir, path_check_point):
     if args.n_fid_samples > 0:
         args.n_fid_samples = min(len(ds_train), args.n_fid_samples)
         to_range_0_1 = lambda x: (x + 1.) / 2.
-        ds_fid = torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu()
-        fid_calculator = Fid_calculator(args, ds_fid)
+        # ds_fid = torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu()
+        fid_calculator = Fid_calculator(args, 1)
     else: 
         fid_calculator = Fid_calculator(args, None)
     def plot(p, x):
