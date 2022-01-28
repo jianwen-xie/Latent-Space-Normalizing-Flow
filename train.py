@@ -100,7 +100,7 @@ def parse_args():
     parser.add_argument('--f_beta2', default=0.999, type=float)
 
     parser.add_argument('--n_epochs', type=int, default=201, help='number of epochs to train for')
-    parser.add_argument('--n_printout', type=int, default=20, help='printout each n iterations')
+    parser.add_argument('--n_printout', type=int, default=100, help='printout each n iterations')
     parser.add_argument('--n_plot', type=int, default=1, help='plot each n epochs')
 
     parser.add_argument('--n_ckpt', type=int, default=1, help='save ckpt each n epochs')
@@ -410,6 +410,7 @@ def train(args, output_dir, path_check_point):
     #################################################
     ## data
 
+    to_range_0_1 = lambda x: (x + 1.) / 2.
     ds_train, ds_val = get_dataset(args)
     if args.incomplete_train is not None: 
         ds_train = IncompleteDataset(ds_train, args.incomplete_train, args.data_size)
@@ -422,7 +423,6 @@ def train(args, output_dir, path_check_point):
 
     if args.n_fid_samples > 0:
         args.n_fid_samples = min(len(ds_train), args.n_fid_samples)
-        to_range_0_1 = lambda x: (x + 1.) / 2.
         # ds_fid = torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu()
         fid_calculator = Fid_calculator(args, 1)
     else: 
@@ -677,6 +677,8 @@ def train(args, output_dir, path_check_point):
                     z_g_0 = sample_p_0(n=batch_size)
                     z_g_k, z_g_grad_norm, z_f_grad_norm = sample_langevin_post_z_with_flow(Variable(z_g_0), x, netG, netF, verbose=False, mask=masks)
                     x_hat = netG(z_g_k.detach())
+                    x_hat = to_range_0_1(x_hat)
+                    x_gt = to_range_0_1(x_gt)
                     loss = mse(x_hat, x_gt).detach()
                     num_unmasked_pixel = masks.sum()
                     total_loss += loss.mean() * batch_size
