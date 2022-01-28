@@ -988,29 +988,28 @@ def test(args, output_dir, path_check_point):
         masks[:, :, 20:60, 12:52] = 0
         masks = torch.tensor(masks).to(device)
 
-        rec_errors,x_samples = [], []
         for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
             x = x.to(device)
             np.save("output/incomplete_truth.npy", x.cpu().data.numpy())
             print(x.shape)
             break 
-        for i in range(5):
+        rec_errors,x_samples = [], [x.cpu(), x.cpu() * masks.cpu()]
+        for i in range(11):
             z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
             z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, mask=None if i==0 else masks)[0]
             x_hat = netG(z_g_k.detach())
             rec_errors.append(mse(x_hat, x).mean())
             print(rec_errors[-1])
             x_samples.append(x_hat.clamp(min=-1., max=1.).detach().cpu())
-        path = 'output/incomplete.png'.format(args.output_dir)
-        x, masks = x.cpu(), masks.cpu()
-        torchvision.utils.save_image(torch.cat([x, x * masks] + x_samples), path, normalize=True, nrow=args.batch_size)
+        x_combine = torch.reshape(torch.stack(x_samples, axis=1), (-1, 3, 64, 64))
+        torchvision.utils.save_image(x_combine, 'output/incomplete.png', normalize=True, nrow=13)
 
-        for i in range(1, 10): 
-            x_frac = x.clone()
+        for i in range(3, 13): 
+            x_frac = x.clone().cpu()
             x_frac[:, :, 20:60, 12:52] = x_samples[i][:, :, 20:60, 12:52]
             x_samples[i] = x_frac
-        path = 'output/incomplete_true.png'.format(args.output_dir)
-        torchvision.utils.save_image(torch.cat([x, x * masks] + x_samples), path, normalize=True, nrow=args.batch_size)
+        x_combine = torch.reshape(torch.stack(x_samples, axis=1), (-1, 3, 64, 64))
+        torchvision.utils.save_image(x_combine, 'output/incomplete_true.png', normalize=True, nrow=13)
         
         
 
