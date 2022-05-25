@@ -35,8 +35,10 @@ from pytorch_fid_wrapper.fid_score import get_activations
 def new_comparison_method(path=None):
 
     test_data = torch.from_numpy(np.load("/home/fei960922/Documents/UCLA_reference/reference_CV/Flow-Based-Prior-Model/output/incomplete_truth.npy"))
-    res_data = torch.from_numpy(np.load("/home/fei960922/Documents/UCLA_reference/reference_CV/Flow-Based-Prior-Model/output/incomplete_save_all_truth_0.npy"))
+    # Please change accordingly
+    res_data = torch.from_numpy(np.load("/home/fei960922/Documents/UCLA_reference/reference_CV/Flow-Based-Prior-Model/output/incomplete_save_all_truth_new.npy"))
     print("Total test data: %d; total results: %d" % (test_data.shape[0], res_data.shape[1]))
+    print(res_data.mean(), res_data.std())
 
     device = "cuda:1"
     DIM = 2048

@@ -869,6 +869,10 @@ def test(args, output_dir, path_check_point):
     netG = netG.to(device)
     netF = netF.to(device)
 
+    # check weight have nan or not
+    # print([torch.isnan(v) for k, v in netG.state_dict().items()])
+    # print([torch.isnan(v) for k, v in netF.state_dict().items()])
+
     def eval_flag():
         netG.eval()
         netF.eval()
@@ -1020,8 +1024,8 @@ def test(args, output_dir, path_check_point):
 
         x_samples = []
         for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
-            if i <= 20:
-                continue
+            # if i <= 20:
+            #     continue
             x = x.to(device)
             for rnd in range(10):
                 z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
@@ -1029,11 +1033,11 @@ def test(args, output_dir, path_check_point):
                 x_hat = netG(z_g_k.detach()).clamp(min=-1., max=1.).detach().cpu().numpy()
             # rec_errors.append(mse(x_hat, x).mean())
             # print(rec_errors[-1])
-                if i==21:
+                if i == 0:
                     x_samples.append(x_hat)
                 else:
                     x_samples[rnd] = np.concatenate([x_samples[rnd], x_hat])
-            np.save("output/incomplete_save_all_truth_2.npy", np.tile(x_samples, 1))
+            np.save("output/incomplete_save_all_truth_new.npy", np.tile(x_samples, 1))
     return
     from sklearn.metrics import precision_recall_curve, auc
     import matplotlib.pyplot as plt 
