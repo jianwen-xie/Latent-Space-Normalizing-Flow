@@ -31,6 +31,7 @@ class Fid_calculator(object):
 from tqdm import tqdm
 from pytorch_fid_wrapper.inception import InceptionV3
 from pytorch_fid_wrapper.fid_score import get_activations
+import torchvision 
 
 def new_comparison_method(path=None):
 
@@ -39,6 +40,7 @@ def new_comparison_method(path=None):
     res_data = torch.from_numpy(np.load("/home/fei960922/Documents/UCLA_reference/reference_CV/Flow-Based-Prior-Model/output/incomplete_save_all_truth_new.npy"))
     print("Total test data: %d; total results: %d" % (test_data.shape[0], res_data.shape[1]))
     print(res_data.mean(), res_data.std())
+    torchvision.utils.save_image(res_data[0, :100], "output/test02.png", normalize=True, nrow=10)
 
     device = "cuda:1"
     DIM = 2048

@@ -884,6 +884,26 @@ def test(args, output_dir, path_check_point):
     ds_train, ds_test = get_dataset(args)
     real_m = None
     args.tasks = ["incomplete_save_all"]
+    args.tasks = ["incomplete"]
+
+    
+    # to_range_0_1 = lambda x: (x + 1.) / 2.
+    # def sample_x():
+    #     z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
+    #     z_f_k, z_f_all = netF(torch.squeeze(z_sample), objective=torch.zeros(
+    #     int(z_sample.shape[0])).to(device), reverse=True, return_obj=False, return_all=True)
+    #     z_f_all = [z_sample.squeeze()] + z_f_all
+    #     res = []
+    #     for z in z_f_all: 
+    #         x_samples = netG(torch.reshape(z, (z.shape[0], z.shape[1], 1, 1)))
+    #         res.append(to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu())
+    #     return res
+    # res = [sample_x()]
+    # for i, x in enumerate(res[0]):
+    #     x_sample = torch.cat([r[i] for r in res])
+    #     path = 'output/generate_x_flow_rand_celeba.png'.format(args.output_dir)
+    #     torchvision.utils.save_image(x_sample, path, normalize=True, nrow=10)
+
     if "generate_all" in args.tasks: 
         print_all_latent(netG, netF, args)
         print_grid(netG, netF, args)
@@ -917,13 +937,6 @@ def test(args, output_dir, path_check_point):
         n = args.n_fid_samples
         print('computing fid with {} samples'.format(n))
         # eval_flag()
-        def sample_x(return_all=False):
-            z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
-            z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(
-            int(z_sample.shape[0])).to(device), reverse=True, return_obj=False)
-            x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
-            res =  to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
-            return res
 
         if real_m is None: 
             pfw.set_config(batch_size=args.batch_size, device=args.device)
@@ -938,12 +951,15 @@ def test(args, output_dir, path_check_point):
     dataloader_test = torch.utils.data.DataLoader(ds_test, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     mse = nn.MSELoss(reduction='none')
+    import time
     def sample_langevin_post_z_with_flow(z, x, netG, netF, mask=None):
         z = z.clone().detach()
         z.requires_grad = True
 
-        g_l_steps_testing = args.g_l_steps * 20
+        g_l_steps_testing = args.g_l_steps
         g_l_step_size_testing = args.g_l_step_size
+        z_grad_g_grad_norm = None
+        z_grad_f_grad_norm = None
 
         for i in range(g_l_steps_testing):
             x_hat = netG(z)
@@ -952,7 +968,7 @@ def test(args, output_dir, path_check_point):
                 g_log_lkhd *= mask 
             g_log_lkhd = 1.0 / (2.0 * args.g_llhd_sigma * args.g_llhd_sigma) * g_log_lkhd.sum()
             z_grad_g = torch.autograd.grad(g_log_lkhd, z)[0]
-
+            
             z1, logdet, _ = netF(torch.squeeze(z), objective=torch.zeros(int(z.shape[0])).to(device), init=False)
             prior_ll = -0.5 * (z1 ** 2)
             prior_ll = prior_ll.flatten(1).sum(-1) + np.log(2 * np.pi)
@@ -992,28 +1008,29 @@ def test(args, output_dir, path_check_point):
         masks[:, :, 20:60, 12:52] = 0
         masks = torch.tensor(masks).to(device)
 
-        # truth_image = []
-        # for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
-        #     truth_image.append(x.cpu().data.numpy())
-        #     print(i)
+        truth_image = []
+        for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
+            break
         # np.save("output/incomplete_truth.npy", np.concatenate(truth_image))
-        # rec_errors,x_samples = [], [x.cpu(), x.cpu() * masks.cpu()]
-        for i in range(10):
+        x = x.to(device)
+        rec_errors,x_samples = [], [x.cpu(), x.cpu() * masks.cpu()]
+        for i in range(11):
             z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
+            z_g_0 = netF(torch.squeeze(z_g_0), objective=torch.zeros(int(z_g_0.shape[0])).to(device), reverse=True, return_obj=False).reshape(z_g_0.shape[0], z_g_0.shape[1], 1, 1)
             z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, mask=None if i==0 else masks)[0]
             x_hat = netG(z_g_k.detach())
             rec_errors.append(mse(x_hat, x).mean())
-            print(rec_errors[-1])
+            # print(rec_errors[-1])
             x_samples.append(x_hat.clamp(min=-1., max=1.).detach().cpu())
         x_combine = torch.reshape(torch.stack(x_samples, axis=1), (-1, 3, 64, 64))
-        torchvision.utils.save_image(x_combine, 'output/incomplete.png', normalize=True, nrow=13)
+        torchvision.utils.save_image(x_combine, 'output/incomplete_vae.png', normalize=True, nrow=13)
 
         for i in range(3, 13): 
             x_frac = x.clone().cpu()
             x_frac[:, :, 20:60, 12:52] = x_samples[i][:, :, 20:60, 12:52]
             x_samples[i] = x_frac
         x_combine = torch.reshape(torch.stack(x_samples, axis=1), (-1, 3, 64, 64))
-        torchvision.utils.save_image(x_combine, 'output/incomplete_true.png', normalize=True, nrow=13)
+        torchvision.utils.save_image(x_combine, 'output/incomplete_true_vae.png', normalize=True, nrow=13)
 
     if "incomplete_save_all" in args.tasks: 
         
@@ -1029,12 +1046,15 @@ def test(args, output_dir, path_check_point):
             x = x.to(device)
             for rnd in range(10):
                 z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
-                z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, mask=None if i==0 else masks)[0]
+                z_g_0 = netF(torch.squeeze(z_g_0), objective=torch.zeros(int(z_g_0.shape[0])).to(device), reverse=True, return_obj=False).reshape(z_g_0.shape[0], z_g_0.shape[1], 1, 1)
+                z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, mask=None if rnd==0 else masks)[0]
                 x_hat = netG(z_g_k.detach()).clamp(min=-1., max=1.).detach().cpu().numpy()
             # rec_errors.append(mse(x_hat, x).mean())
             # print(rec_errors[-1])
                 if i == 0:
                     x_samples.append(x_hat)
+                    if rnd == 1:
+                        torchvision.utils.save_image(torch.from_numpy(x_hat[:100]), "output/try_incomplete.png", normalize=True, nrow=10)
                 else:
                     x_samples[rnd] = np.concatenate([x_samples[rnd], x_hat])
             np.save("output/incomplete_save_all_truth_new.npy", np.tile(x_samples, 1))
