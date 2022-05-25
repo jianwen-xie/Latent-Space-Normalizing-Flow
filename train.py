@@ -877,7 +877,7 @@ def test(args, output_dir, path_check_point):
     to_range_0_1 = lambda x: (x + 1.) / 2.
     ds_train, ds_test = get_dataset(args)
     real_m = None
-    args.tasks = ["incomplete"]
+    args.tasks = ["incomplete_save_all"]
     if "generate_all" in args.tasks: 
         print_all_latent(netG, netF, args)
         print_grid(netG, netF, args)
@@ -986,13 +986,13 @@ def test(args, output_dir, path_check_point):
         masks[:, :, 20:60, 12:52] = 0
         masks = torch.tensor(masks).to(device)
 
-        for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
-            x = x.to(device)
-            np.save("output/incomplete_truth.npy", x.cpu().data.numpy())
-            print(x.shape)
-            break 
-        rec_errors,x_samples = [], [x.cpu(), x.cpu() * masks.cpu()]
-        for i in range(11):
+        # truth_image = []
+        # for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
+        #     truth_image.append(x.cpu().data.numpy())
+        #     print(i)
+        # np.save("output/incomplete_truth.npy", np.concatenate(truth_image))
+        # rec_errors,x_samples = [], [x.cpu(), x.cpu() * masks.cpu()]
+        for i in range(10):
             z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
             z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, mask=None if i==0 else masks)[0]
             x_hat = netG(z_g_k.detach())
@@ -1008,9 +1008,31 @@ def test(args, output_dir, path_check_point):
             x_samples[i] = x_frac
         x_combine = torch.reshape(torch.stack(x_samples, axis=1), (-1, 3, 64, 64))
         torchvision.utils.save_image(x_combine, 'output/incomplete_true.png', normalize=True, nrow=13)
-        
-        
 
+    if "incomplete_save_all" in args.tasks: 
+        
+        print("do incomplete on rebuttal")
+        masks = np.ones((args.batch_size, 3, args.img_size, args.img_size))
+        masks[:, :, 20:60, 12:52] = 0
+        masks = torch.tensor(masks).to(device)
+
+        x_samples = []
+        for i, (x, y) in tqdm(enumerate(dataloader_test, 0), leave=False):
+            if i <= 20:
+                continue
+            x = x.to(device)
+            for rnd in range(10):
+                z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
+                z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, mask=None if i==0 else masks)[0]
+                x_hat = netG(z_g_k.detach()).clamp(min=-1., max=1.).detach().cpu().numpy()
+            # rec_errors.append(mse(x_hat, x).mean())
+            # print(rec_errors[-1])
+                if i==21:
+                    x_samples.append(x_hat)
+                else:
+                    x_samples[rnd] = np.concatenate([x_samples[rnd], x_hat])
+            np.save("output/incomplete_save_all_truth_2.npy", np.tile(x_samples, 1))
+    return
     from sklearn.metrics import precision_recall_curve, auc
     import matplotlib.pyplot as plt 
 
