@@ -2,12 +2,12 @@ train_svhn: contain the first version of flow that outputs the latent vector
 
 update the 256 structure:
 
-###code: 
+#### code: 
 ```bash
 python train_celeba256.py
 ```
 
-###dataset:
+#### dataset:
 The download link for CelebA-HQ seems to broke. Thus, I finally use the CelebA-Mask-HQ "[dataset](https://github.com/switchablenorms/CelebAMask-HQ)", which is a similar large resolution dataset.
 To download the data:
 
