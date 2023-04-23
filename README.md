@@ -32,7 +32,9 @@ conda activate fpp
 #### (2) Testing
 
 
-1. To generate images using pretrained models, please first download the pretrained checkpoints from "[this link](https://drive.google.com/drive/folders/1NY5NA7wIguuGEnH4jo-vQ4f4fxFyC-58?usp=sharing)". The folder contains checkpoints with different experimental settings. The checkpoints should be downloaded to the ckpt folder (e.g., you should have 'ckpt/cifar10.pth.tar' for CoopFlow cifar10 setting).
+1. To generate images using pretrained models, please first download the pretrained checkpoints from "[this link](https://drive.google.com/drive/folders/14OtnJpIhiiH9UT3kCSLPllDyrV3iop7j?usp=share_link)". The folder contains checkpoints with different datasets. 
+
+The checkpoints should be downloaded to the ckpt folder (e.g., you should have 'ckpt/cifar10.pth.tar' for CoopFlow cifar10 setting).
 
 
 
