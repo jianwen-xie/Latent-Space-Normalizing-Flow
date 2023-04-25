@@ -28,6 +28,19 @@ conda activate fpp
 
 #### (i) Training
 
+(a) SVHN dataset
+
+    $ python train.py --dataset svhn --train_mode True --g_l_steps 20 --img_size 32 --nz 100 --ngf 64 --g_lr 0.0004  --f_lr 0.0004
+
+    
+(b) Cifar-10 dataset
+
+    $ python train.py --dataset cifar10 --train_mode True --g_l_steps 40 --img_size 32 --nz 128 --ngf 128 --g_lr 0.00038 --f_lr 0.00038
+    
+(c) CelebA dataset
+
+    $ python train.py --dataset celeba_crop --train_mode True --g_l_steps 20 --img_size 64 --nz 100 --ngf 128 --g_lr 0.0003 --f_lr 0.0003 
+    
 
 #### (2) Testing
 
