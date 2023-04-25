@@ -19,9 +19,6 @@ conda activate fpp
     }
     
     
-
-
-
 ## Usage
 
 ### (1) Image Generation
@@ -42,16 +39,28 @@ conda activate fpp
     $ python train.py --dataset celeba_crop --train_mode True --g_l_steps 20 --img_size 64 --nz 100 --ngf 128 --g_lr 0.0003 --f_lr 0.0003 
     
 
-#### (2) Testing
+#### (ii) Testing
 
 
-1. To generate images using pretrained models, please first download the pretrained checkpoints from "[this link](https://drive.google.com/drive/folders/14OtnJpIhiiH9UT3kCSLPllDyrV3iop7j?usp=share_link)". The folder contains checkpoints with different datasets. 
+To generate images using pretrained models, please first download the pretrained checkpoints from "[this link](https://drive.google.com/drive/folders/14OtnJpIhiiH9UT3kCSLPllDyrV3iop7j?usp=share_link)". The folder contains checkpoints with different datasets. 
 
-The checkpoints should be downloaded to the ckpt folder (e.g., you should have 'ckpt/cifar10.pth.tar' for CoopFlow cifar10 setting).
+The checkpoints should be downloaded to the ./ckpt folder (e.g., you should have './ckpt/ckpt_000115.pth' for the experiment using SVHN dataset).
 
+(a) SVHN dataset
 
+    $ python train.py --dataset svhn --train_mode False --g_l_steps 400 --img_size 32 --nz 100 --ngf 64 --g_lr 0.0004  --f_lr 0.0004 --path_check_point ./ckpt/ckpt_000115.pth 
 
-train_svhn: contain the first version of flow that outputs the latent vector
+    
+(b) Cifar-10 dataset
+
+    $ python train.py --dataset cifar10 --train_mode False --g_l_steps 800 --img_size 32 --nz 128 --ngf 128 --g_lr 0.00038 --f_lr 0.00038 --path_check_point ./ckpt/ckpt_000093.pth 
+    
+(c) CelebA dataset
+
+    $ python train.py --dataset celeba_crop --train_mode False --g_l_steps 400 --img_size 64 --nz 100 --ngf 128 --g_lr 0.0003 --f_lr 0.0003 --path_check_point ./ckpt/ckpt_000071.pth 
+    
+
+#### (3) 
 
 update the 256 structure:
 
