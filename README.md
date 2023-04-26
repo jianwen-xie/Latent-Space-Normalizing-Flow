@@ -27,16 +27,16 @@ conda activate fpp
 
 (a) SVHN dataset
 
-    $ python train.py --dataset svhn --train_mode True --g_l_steps 20 --img_size 32 --nz 100 --ngf 64 --g_lr 0.0004  --f_lr 0.0004
+    $ python train.py --dataset svhn --g_l_steps 20 --img_size 32 --nz 100 --ngf 64 --g_lr 0.0004  --f_lr 0.0004
 
     
 (b) Cifar-10 dataset
 
-    $ python train.py --dataset cifar10 --train_mode True --g_l_steps 40 --img_size 32 --nz 128 --ngf 128 --g_lr 0.00038 --f_lr 0.00038
+    $ python train.py --dataset cifar10 --g_l_steps 40 --img_size 32 --nz 128 --ngf 128 --g_lr 0.00038 --f_lr 0.00038
     
 (c) CelebA dataset
 
-    $ python train.py --dataset celeba_crop --train_mode True --g_l_steps 20 --img_size 64 --nz 100 --ngf 128 --g_lr 0.0003 --f_lr 0.0003 
+    $ python train.py --dataset celeba_crop --g_l_steps 20 --img_size 64 --nz 100 --ngf 128 --g_lr 0.0003 --f_lr 0.0003 
     
 
 #### (ii) Testing
@@ -44,20 +44,22 @@ conda activate fpp
 
 To generate images using pretrained models, please first download the pretrained checkpoints from "[this link](https://drive.google.com/drive/folders/14OtnJpIhiiH9UT3kCSLPllDyrV3iop7j?usp=share_link)". The folder contains checkpoints with different datasets. 
 
-The checkpoints should be downloaded to the ./ckpt folder (e.g., you should have './ckpt/ckpt_000115.pth' for the experiment using SVHN dataset).
+The checkpoints should be downloaded to the ./ckpt folder, e.g., you should have './ckpt/ckpt_000115.pth' for the experiment using SVHN dataset.
+
+The following commands synthesize 50,000 new images and evaluate the FIDs, as well as reconstruct testing images and report reconstruction errors.    
 
 (a) SVHN dataset
 
-    $ python train.py --dataset svhn --train_mode False --g_l_steps 400 --img_size 32 --nz 100 --ngf 64 --g_lr 0.0004  --f_lr 0.0004 --path_check_point ./ckpt/ckpt_000115.pth 
+    $ python train.py --dataset svhn --test_mode --g_l_steps 400 --img_size 32 --nz 100 --ngf 64 --g_lr 0.0004  --f_lr 0.0004 --path_check_point ./ckpt/ckpt_000115.pth --n_fid_samples 50000
 
     
 (b) Cifar-10 dataset
 
-    $ python train.py --dataset cifar10 --train_mode False --g_l_steps 800 --img_size 32 --nz 128 --ngf 128 --g_lr 0.00038 --f_lr 0.00038 --path_check_point ./ckpt/ckpt_000093.pth 
+    $ python train.py --dataset cifar10 --test_mode --g_l_steps 800 --img_size 32 --nz 128 --ngf 128 --g_lr 0.00038 --f_lr 0.00038 --path_check_point ./ckpt/ckpt_000093.pth --n_fid_samples 50000
     
 (c) CelebA dataset
 
-    $ python train.py --dataset celeba_crop --train_mode False --g_l_steps 400 --img_size 64 --nz 100 --ngf 128 --g_lr 0.0003 --f_lr 0.0003 --path_check_point ./ckpt/ckpt_000071.pth 
+    $ python train.py --dataset celeba_crop --test_mode --g_l_steps 400 --img_size 64 --nz 100 --ngf 128 --g_lr 0.0003 --f_lr 0.0003 --path_check_point ./ckpt/ckpt_000071.pth --n_fid_samples 50000
     
 
 #### (3) 
