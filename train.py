@@ -25,6 +25,7 @@ import torch.nn.utils.spectral_norm as sn
 
 import torchvision
 import torchvision.transforms as transforms
+import pytorch_fid_wrapper as pfw
 
 import pygrid
 
@@ -37,15 +38,15 @@ def parse_args():
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--train_mode', type=bool, default=True, help='training or test mode')
+    parser.add_argument('--test_mode', action='store_true', default=False, help='test or not')
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
-    parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'celeba', 'celeba_crop'])
+    parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'cifar10', 'celeba_crop'])
     parser.add_argument('--img_size', default=32, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
     parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
-    parser.add_argument('--nc', default=3)
-    parser.add_argument('--ngf', default=64, help='feature dimensions of generator')
+    parser.add_argument('--nc', default=3, type=int)
+    parser.add_argument('--ngf', default=64, type=int, help='feature dimensions of generator')
 
     parser.add_argument('--g_llhd_sigma', type=float, default=0.3, help='prior of factor analysis')
     parser.add_argument('--g_activation', type=str, default='lrelu')
@@ -70,11 +71,11 @@ def parse_args():
     parser.add_argument('--g_max_norm', type=float, default=100, help='max norm allowed')
     parser.add_argument('--f_max_norm', type=float, default=100, help='max norm allowed')
 
-    parser.add_argument('--g_decay',  default=0, help='weight decay for gen')
-    parser.add_argument('--f_decay', default=0, help='weight decay for flow')
+    parser.add_argument('--g_decay',  default=0, type=float, help='weight decay for gen')
+    parser.add_argument('--f_decay', default=0, type=float, help='weight decay for flow')
 
-    parser.add_argument('--g_gamma', default=0.998, help='lr decay for gen')
-    parser.add_argument('--f_gamma', default=0.998, help='lr decay for flow')
+    parser.add_argument('--g_gamma', default=0.998, type=float, help='lr decay for gen')
+    parser.add_argument('--f_gamma', default=0.998, type=float, help='lr decay for flow')
 
     parser.add_argument('--g_beta1', default=0.5, type=float)
     parser.add_argument('--g_beta2', default=0.999, type=float)
@@ -87,63 +88,39 @@ def parse_args():
     parser.add_argument('--n_plot', type=int, default=1, help='plot each n epochs')
 
     parser.add_argument('--n_ckpt', type=int, default=1, help='save ckpt each n epochs')
-    parser.add_argument('--n_metrics', type=int, default=1, help='fid each n epochs')    #
+    parser.add_argument('--n_metrics', type=int, default=10, help='fid each n epochs')    #
     parser.add_argument('--n_stats', type=int, default=1, help='stats each n epochs')
     parser.add_argument('--n_fid_samples', type=int, default=50000)
+
+    parser.add_argument('--path_check_point', type=str, default=None)
+    parser.add_argument('--testing_reconstruct', action='store_true', default=False, help='testing the reconstruction or not')
 
 
     return parser.parse_args()
 
+def statistics(a):
+    return "%.4f +- %.4f [%.4f-%.4f] : sum %.4f" % (a.mean(), a.std(), a.max(), a.min(), a.sum())
 
-def create_args_grid():
-    # TODO add your enumeration of parameters here
+class Fid_calculator(object):
 
-    e_lr = [0.00002]
-    e_l_step_size = [0.4]
-    e_init_sig = [1.0]
-    e_l_steps = [30,50,60]
-    e_activation = ['lrelu']
+    def __init__(self, args, training_data):
+        pfw.set_config(batch_size=args.batch_size, device="cuda")
+        training_data = training_data.repeat(1,3 if training_data.shape[1] == 1 else 1,1,1)
+        print("precalculate FID distribution for training data...")
+        print("training data shape", training_data.shape, training_data.max(), training_data.min())
+        self.real_m, self.real_s = pfw.get_stats(training_data)
+        print("realm:", statistics(self.real_m), "reals:", statistics(self.real_s))
 
-    g_llhd_sigma = [0.3]
-    g_lr = [0.0001]
-    g_l_steps = [20]
-    g_activation = ['lrelu']
-
-    ngf = [64]
-    ndf = [200]
-
-    args_list = [e_lr, e_l_step_size, e_init_sig, e_l_steps, e_activation, g_llhd_sigma, g_lr, g_l_steps, g_activation, ngf, ndf]
-
-    opt_list = []
-    for i, args in enumerate(itertools.product(*args_list)):
-        opt_job = {'job_id': int(i), 'status': 'open'}
-        opt_args = {
-            'e_lr': args[0],
-            'e_l_step_size': args[1],
-            'e_init_sig': args[2],
-            'e_l_steps': args[3],
-            'e_activation': args[4],
-            'g_llhd_sigma': args[5],
-            'g_lr': args[6],
-            'g_l_steps': args[7],
-            'g_activation': args[8],
-            'ngf': args[9],
-            'ndf': args[10],
-        }
-        # TODO add your result metric here
-        opt_result = {'fid_best': 0.0, 'fid': 0.0, 'mse': 0.0}
-
-        opt_list += [merge_dicts(opt_job, opt_args, opt_result)]
-
-    return opt_list
-
-
-def update_job_result(job_opt, job_stats):
-    # TODO add your result metric here
-    job_opt['fid_best'] = job_stats['fid_best']
-    job_opt['fid'] = job_stats['fid']
-    job_opt['mse'] = job_stats['mse']
-
+    def fid(self, data):
+        data[torch.isnan(data)] = 0
+        print("generated data shape", data.shape, data.max(), data.min())
+        data[data > 1] = 1
+        data[data < -1] = -1
+        data = data.repeat(1,3 if data.shape[1] == 1 else 1,1,1)
+        print("Before update realm:", statistics(self.real_m), "reals:", statistics(self.real_s))
+        fid = pfw.fid(data, real_m=self.real_m.copy(), real_s=self.real_s.copy())
+        print("After update realm:", statistics(self.real_m), "reals:", statistics(self.real_s))
+        return fid
 
 ##########################################################################################################
 ## Data
@@ -168,7 +145,24 @@ def get_dataset(args):
                                ]))
         return ds_train, ds_val
 
-    if args.dataset == 'celeba':
+    elif args.dataset == 'cifar10':
+
+        import torchvision.transforms as transforms
+        ds_train = torchvision.datasets.CIFAR10(fs_prefix + 'data/{}'.format(args.dataset), train=True, download=True,
+                                             transform=transforms.Compose([
+                                                 transforms.Resize(args.img_size),
+                                                 transforms.ToTensor(),
+                                                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                                             ]))
+        ds_val = torchvision.datasets.CIFAR10(fs_prefix + 'data/{}'.format(args.dataset), train=False, download=True,
+                                           transform=transforms.Compose([
+                                               transforms.Resize(args.img_size),
+                                               transforms.ToTensor(),
+                                               transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                                           ]))
+        return ds_train, ds_val
+
+    elif args.dataset == 'celeba':
 
         import torchvision.transforms as transforms
 
@@ -186,7 +180,7 @@ def get_dataset(args):
                                                         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]))
         return ds_train, ds_val
 
-    if args.dataset == 'celeba_crop':
+    elif args.dataset == 'celeba_crop':
 
         crop = lambda x: transforms.functional.crop(x, 45, 25, 173-45, 153-25)
 
@@ -204,87 +198,6 @@ def get_dataset(args):
                                                         transforms.Resize(args.img_size),
                                                         transforms.ToTensor(),
                                                         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]))
-        return ds_train, ds_val
-
-    elif args.dataset == 'celeba32_sri':
-
-        data_path = fs_prefix + 'data/{}/img_align_celeba'.format(args.dataset)
-        cache_pkl = fs_prefix + 'data/{}/celeba_40000_32.pickle'.format(args.dataset)
-
-        from data import SingleImagesFolderMTDataset
-        import PIL
-        import torchvision.transforms as transforms
-
-        ds_train = SingleImagesFolderMTDataset(root=data_path,
-                                            cache=cache_pkl,
-                                            num_images=40000,
-                                            transform=transforms.Compose([
-                                                PIL.Image.fromarray,
-                                                transforms.Resize(args.img_size),
-                                                transforms.CenterCrop(args.img_size),
-                                                transforms.ToTensor(),
-                                                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                                            ]))
-
-        # TODO(nijkamp): create ds_val pickle
-        ds_val = ds_train
-
-        return ds_train, ds_val
-
-    elif args.dataset == 'celeba64_sri':
-
-        # wget https://www.dropbox.com/s/zjcpa1hrjxy9nne/celeba64_40000.pkl?dl=1
-
-        data_path = fs_prefix + 'data/{}/img_align_celeba'.format(args.dataset)
-        cache_pkl = fs_prefix + 'data/{}/celeba64_40000.pkl'.format(args.dataset)
-
-        assert os.path.exists(cache_pkl)
-
-        from data import SingleImagesFolderMTDataset
-        import PIL
-        import torchvision.transforms as transforms
-
-        ds_train = SingleImagesFolderMTDataset(root=data_path,
-                                            cache=cache_pkl,
-                                            num_images=40000,
-                                            transform=transforms.Compose([
-                                                PIL.Image.fromarray,
-                                                transforms.Resize(args.img_size),
-                                                transforms.CenterCrop(args.img_size),
-                                                transforms.ToTensor(),
-                                                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                                            ]))
-
-        # TODO(nijkamp): create ds_val pickle
-        ds_val = ds_train
-
-        return ds_train, ds_val
-
-    elif args.dataset == 'celeba64_sri_crop':
-
-        # wget https://www.dropbox.com/s/9omncogiyaul54d/celeba_40000_64_center.pickle?dl=0
-
-        data_path = fs_prefix + 'data/{}/img_align_celeba'.format(args.dataset)
-        cache_pkl = fs_prefix + 'data/{}/celeba_40000_64_center.pickle'.format(args.dataset)
-
-        from data import SingleImagesFolderMTDataset
-        import PIL
-        import torchvision.transforms as transforms
-
-        ds_train = SingleImagesFolderMTDataset(root=data_path,
-                                            cache=cache_pkl,
-                                            num_images=40000,
-                                            transform=transforms.Compose([
-                                                PIL.Image.fromarray,
-                                                transforms.Resize(args.img_size),
-                                                transforms.CenterCrop(args.img_size),
-                                                transforms.ToTensor(),
-                                                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                                            ]))
-
-        # TODO(nijkamp): create ds_val pickle
-        ds_val = ds_train
-
         return ds_train, ds_val
 
     else:
@@ -324,7 +237,10 @@ def train(args, output_dir, path_check_point):
 
     assert len(ds_train) >= args.n_fid_samples
     to_range_0_1 = lambda x: (x + 1.) / 2.
-    ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())
+    # ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())
+    ds_fid = torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu()
+    print("training data:", statistics(ds_fid))
+    fid_calculator = Fid_calculator(args, ds_fid)
     logger.info('ds_fid.shape={}'.format(ds_fid.shape))
 
     def plot(p, x):
@@ -402,49 +318,9 @@ def train(args, output_dir, path_check_point):
 
         return z.detach(), z_grad_g_grad_norm, z_grad_f_grad_norm
 
-    #################################################
-    ## fid
-
-    def get_fid(n):
-
-        assert n <= ds_fid.shape[0]
-
-        logger.info('computing fid with {} samples'.format(n))
-
-        try:
-            eval_flag()
-
-            def sample_x():
-
-                z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
-                z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device),
-                             reverse=True, return_obj=False)
-
-                x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
-                x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
-
-                return x_samples
-
-            x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))]).numpy()
-            fid = compute_fid_nchw(args, ds_fid, x_samples)
-            return fid
-
-        except Exception as e:
-            print(e)
-            logger.critical(e, exc_info=True)
-            logger.info('FID failed')
-
-        finally:
-            train_flag()
-
-
-
 
     #################################################
     ## train
-
-    train_flag()
-
 
     # resume the training (1) for fine-tuning or (2) because of failure
     if path_check_point:
@@ -571,66 +447,33 @@ def train(args, output_dir, path_check_point):
         lr_scheduleG.step(epoch=epoch)
         lr_scheduleF.step(epoch=epoch)
 
-        # Stats
-        # if epoch % args.n_stats == 0:
-        #     stats['loss_g'].append(loss_g.item())
-        #     stats['loss_e'].append(loss_e.item())
-        #     stats['en_neg'].append(en_neg.data.item())
-        #     stats['en_pos'].append(en_pos.data.item())
-        #     stats['grad_norm_g'].append(grad_norm_g)
-        #     stats['grad_norm_e'].append(grad_norm_e)
-        #     stats['z_g_grad_norm'].append(z_g_grad_norm.item())
-        #     stats['z_e_grad_norm'].append(z_e_grad_norm.item())
-        #     stats['z_e_k_grad_norm'].append(z_e_k_grad_norm.item())
-        #     stats['fid'].append(fid)
-        #     interval.append(epoch + 1)
-        #     plot_stats(output_dir, stats, interval)
-
         # Metrics
         if epoch == args.n_epochs or epoch % args.n_metrics == 0:
 
-            fid = get_fid(n=args.n_fid_samples)
+            try:
+                eval_flag()
+
+                def sample_x():
+                    z_sample = torch.randn(args.batch_size, args.nz, 1, 1).to(device)
+                    z_f_k = netF(torch.squeeze(z_sample), objective=torch.zeros(int(z_sample.shape[0])).to(device),
+                                 reverse=True, return_obj=False)
+                    x_samples = netG(torch.reshape(z_f_k, (z_f_k.shape[0], z_f_k.shape[1], 1, 1)))
+                    x_samples = to_range_0_1(x_samples).clamp(min=0., max=1.).detach().cpu()
+                    return x_samples
+
+                x_samples = torch.cat([sample_x() for _ in range(int(args.n_fid_samples / args.batch_size))])
+                plot('{}/samples/{:>06d}_x_z_test_fid.png'.format(output_dir, epoch), (x_samples[:100] - 0.5) * 2.0)
+                fid = fid_calculator.fid(x_samples)
+
+            except Exception as e:
+                print(e)
+                logger.critical(e, exc_info=True)
+                logger.info('FID failed')
+                fid = 10000
+
             if fid < fid_best:
                 fid_best = fid
             logger.info('fid={}'.format(fid))
-
-        # Plot
-        # if epoch % args.n_plot == 0:
-        #
-        #     batch_size_fixed = x_fixed.shape[0]
-        #
-        #     z_g_0 = sample_p_0(n=batch_size_fixed)
-        #     z_f_0 = sample_p_0(n=batch_size_fixed)
-        #
-        #     z_g_k, z_g_grad_norm, z_f_grad_norm = sample_langevin_post_z_with_flow(Variable(z_g_0), x_fixed, netG, netF)
-        #
-        #
-        #     # z_e_k, z_e_k_grad_norm = sample_langevin_prior_z(Variable(z_e_0), netE)
-        #
-        #     # x_0 = netG(z_f_0)
-        #     # z_f_k = netF.reverse(z_f_0)
-        #     # x_k = netG(z_f_k)
-        #
-        #     z_sample = []
-        #     z_shapes = []
-        #     for ib in range(args.f_n_block):
-        #         z_shapes.append((args.f_in_channel, 1, 1))
-        #     for z in z_shapes:
-        #         z_new = torch.randn(args.batch_size, *z) #* args.temp
-        #         z_sample.append(z_new.to(device))
-        #
-        #     z_f_k = netF.reverse(z_sample)
-        #
-        #
-        #
-        #
-        #
-        #     with torch.no_grad():
-        #         # plot('{}/samples/{:>06d}_{:>06d}_x_gt_fixed.png'.format(output_dir, epoch, i), x_fixed)
-        #         # plot('{}/samples/{:>06d}_{:>06d}_x_z_pos.png'.format(output_dir, epoch, i), netG(z_g_k))
-        #         # plot('{}/samples/{:>06d}_{:>06d}_x_z_noise_prior.png'.format(output_dir, epoch, i), netG(z_f_0))
-        #         plot('{}/samples/{:>06d}_{:>06d}_x_z_flow_prior.png'.format(output_dir, epoch, i), netG(z_f_k))
-        #         # plot('{}/samples/{:>06d}_{:>06d}_x_z_fixed_noise_prior.png'.format(output_dir, epoch, i), netG(z_fixed))
 
         # Ckpt
         if epoch == args.n_epochs or epoch % args.n_ckpt == 0:
@@ -644,17 +487,6 @@ def train(args, output_dir, path_check_point):
             }
             torch.save(save_dict, '{}/ckpt/ckpt_{:>06d}.pth'.format(output_dir, epoch))
 
-        # Early exit
-        # if epoch > 10 and loss_g > 300:
-        #     logger.info('early exit condition 1: epoch > 10 and loss_g > 300')
-        #     return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
-        #     return
-
-        # if epoch > 40 and fid > 100:
-        #     logger.info('early exit condition 2: epoch > 40 and fid > 100')
-        #     return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
-        #     return
-
     #return_dict['stats'] = {'fid_best': fid_best, 'fid': fid, 'mse': loss_g.data.item()}
     logger.info('done')
 
@@ -663,70 +495,11 @@ def train(args, output_dir, path_check_point):
 ##########################################################################################################
 ## Metrics
 
-from fid_v2_tf_cpu import fid_score
+# from fid_v2_tf_cpu import fid_score
 
 def is_xsede():
     import socket
     return 'psc' in socket.gethostname()
-
-
-def compute_fid(args, x_data, x_samples, use_cpu=False):
-
-    assert type(x_data) == np.ndarray
-    assert type(x_samples) == np.ndarray
-
-    # RGB
-    assert x_data.shape[3] == 3
-    assert x_samples.shape[3] == 3
-
-    # NHWC
-    assert x_data.shape[1] == x_data.shape[2]
-    assert x_samples.shape[1] == x_samples.shape[2]
-
-    # [0,255]
-    assert np.min(x_data) > 0.-1e-4
-    assert np.max(x_data) < 255.+1e-4
-    assert np.mean(x_data) > 10.
-
-    # [0,255]
-    assert np.min(x_samples) > 0.-1e-4
-    assert np.max(x_samples) < 255.+1e-4
-    assert np.mean(x_samples) > 1.
-
-    if use_cpu:
-        def create_session():
-            import tensorflow.compat.v1 as tf
-            config = tf.ConfigProto()
-            config.gpu_options.allow_growth = True
-            config.gpu_options.per_process_gpu_memory_fraction = 0.0
-            config.gpu_options.visible_device_list = ''
-            return tf.Session(config=config)
-    else:
-        def create_session():
-            import tensorflow.compat.v1 as tf
-            config = tf.ConfigProto()
-            config.gpu_options.allow_growth = True
-            config.gpu_options.per_process_gpu_memory_fraction = 0.2
-            config.gpu_options.visible_device_list = str(args.device)
-            return tf.Session(config=config)
-
-    path = '/tmp' if not is_xsede() else '/pylon5/ac561ep/enijkamp/inception'
-
-    fid = fid_score(create_session, x_data, x_samples, path, cpu_only=use_cpu)
-
-    return fid
-
-def compute_fid_nchw(args, x_data, x_samples):
-
-    to_nhwc = lambda x: np.transpose(x, (0, 2, 3, 1))
-
-    x_data_nhwc = to_nhwc(255 * x_data)
-    x_samples_nhwc = to_nhwc(255 * x_samples)
-
-    fid = compute_fid(args, x_data_nhwc, x_samples_nhwc)
-
-    return fid
-
 
 #################################################
 ## test
@@ -769,9 +542,8 @@ def test(args, output_dir, path_check_point):
     #################################################
     ## test
 
-    n = args.n_fid_samples
 
-    logger.info('computing fid with {} samples'.format(n))
+    logger.info('computing fid with {} samples'.format(args.n_fid_samples))
 
     eval_flag()
     to_range_0_1 = lambda x: (x + 1.) / 2.
@@ -787,16 +559,24 @@ def test(args, output_dir, path_check_point):
 
         return x_samples
 
-    x_samples = torch.cat([sample_x() for _ in range(int(n / args.batch_size))]).numpy()
+    ## save a batch of synthesized examples
+    def plot(p, x):
+        return torchvision.utils.save_image(torch.clamp(x, -1., 1.), p, normalize=True, nrow=int(np.sqrt(args.batch_size)))
+
+    x_saved = sample_x()
+    plot('{}/synthesis.png'.format(output_dir), x_saved)
+
+
+    x_samples = torch.cat([sample_x() for _ in range(int(args.n_fid_samples / args.batch_size))])
+
 
     ds_train, ds_test = get_dataset(args)
-    ds_fid = np.array(torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu().numpy())    
-    
+    assert len(ds_train) >= args.n_fid_samples
+    ds_fid = torch.stack([to_range_0_1(ds_train[i][0]) for i in range(len(ds_train))]).cpu()
+    fid_calculator = Fid_calculator(args, ds_fid)
 
-    fid = compute_fid_nchw(args, ds_fid, x_samples)
-
+    fid = fid_calculator.fid(x_samples)
     logger.info('fid={}'.format(fid))
-
 
 
     dataloader_test = torch.utils.data.DataLoader(ds_test, batch_size=args.batch_size, shuffle=True, num_workers=0)
@@ -822,11 +602,6 @@ def test(args, output_dir, path_check_point):
             #f_log_lkhd = -ll.mean()
             f_log_lkhd = -ll.sum()
 
-
-            #log_p, logdet, _ = netF(z)
-            #logdet = logdet.mean()
-            #f_log_lkhd, _, _ = calc_loss(log_p, logdet, args.f_in_channel, n_bins=2.0 ** args.n_bits)
-
             z_grad_f = torch.autograd.grad(f_log_lkhd, z)[0]
 
             z.data = z.data - 0.5 * g_l_step_size_testing * g_l_step_size_testing * (z_grad_g + z_grad_f)
@@ -842,47 +617,26 @@ def test(args, output_dir, path_check_point):
 
         return z.detach(), z_grad_g_grad_norm, z_grad_f_grad_norm
 
+    if args.testing_reconstruct:
 
-    recon_error = 0
-    for i, (x, y) in enumerate(dataloader_test, 0):
+        recon_error = 0
+        for i, (x, y) in enumerate(dataloader_test, 0):
 
-        x = x.to(device)
+            x = x.to(device)
 
-        z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
-        z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, verbose=False)[0]
-        x_hat = netG(z_g_k.detach())
-        # x_hat = to_range_0_1(x_hat).clamp(min=0., max=1.)
-        recon_error = recon_error + float(mse(x_hat, x).cpu().data.numpy()) / x.shape[0] / 3 / args.img_size / args.img_size
+            z_g_0 = torch.randn(x.shape[0], args.nz, 1, 1).to(device)
+            z_g_k = sample_langevin_post_z_with_flow(z_g_0, x, netG, netF, verbose=False)[0]
+            x_hat = netG(z_g_k.detach())
+            # x_hat = to_range_0_1(x_hat).clamp(min=0., max=1.)
+            recon_error = recon_error + float(mse(x_hat, x).cpu().data.numpy()) / x.shape[0] / 3 / args.img_size / args.img_size
 
-    recon_error = recon_error / (i + 1)
-    logger.info('reconstruction error={}'.format(recon_error))
-
-
-
-
+            if i==0:
+                plot('{}/reconstrction.png'.format(output_dir), x_hat)
+                plot('{}/original.png'.format(output_dir), x)
 
 
-##########################################################################################################
-## Plots
-
-import os
-import matplotlib
-
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
-def plot_stats(output_dir, stats, interval):
-    content = stats.keys()
-    # f = plt.figure(figsize=(20, len(content) * 5))
-    f, axs = plt.subplots(len(content), 1, figsize=(20, len(content) * 5))
-    for j, (k, v) in enumerate(stats.items()):
-        axs[j].plot(interval, v)
-        axs[j].set_ylabel(k)
-
-    f.savefig(os.path.join(output_dir, 'stat.pdf'), bbox_inches='tight')
-    f.savefig(os.path.join(output_dir, 'stat.png'), bbox_inches='tight')
-    plt.close(f)
-
+        recon_error = recon_error / (i + 1)
+        logger.info('reconstruction error={}'.format(recon_error))
 
 
 ##########################################################################################################
@@ -936,8 +690,9 @@ def print_gpus():
 
 
 def get_free_gpu():
-    os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
-    memory_available = [int(x.split()[2]) for x in open('tmp', 'r').readlines()]
+
+    output = os.popen('nvidia-smi --query-gpu=memory.free --format=csv,noheader').readlines()
+    memory_available = [int(line.split()[0]) for line in output]
     free_gpu = np.argmax(memory_available)
     print('set gpu', free_gpu, 'with', np.max(memory_available), 'mb')
     return free_gpu
@@ -1016,15 +771,13 @@ def main():
     args = to_named_dict(args)
 
 
-    if args.train_mode:
-        # training mode
-        path_check_point = None#'/home/kenny/extend/latent-space-flow-prior/output/train_svhn3/2021-07-24-03-48-20_fid=23.14/ckpt/ckpt_000040.pth'
-        train(args, output_dir, path_check_point)
-    else:
+    if args.test_mode:
         # testing mode
-        path_check_point = '/home/kenny/extend/latent-space-flow-prior/output/train_svhn/2021-08-17-00-02-28/ckpt/ckpt_000071.pth'
-        test(args, output_dir, path_check_point)
+        test(args, output_dir, args.path_check_point)
 
+    else:
+        # training mode
+        train(args, output_dir, args.path_check_point)
 
 if __name__ == '__main__':
     main()
