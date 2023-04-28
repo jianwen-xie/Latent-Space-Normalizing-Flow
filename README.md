@@ -44,11 +44,7 @@ conda activate fpp
 
 To generate images using pretrained models, please first download the pretrained checkpoints from "[this link](https://drive.google.com/drive/folders/14OtnJpIhiiH9UT3kCSLPllDyrV3iop7j?usp=share_link)". The folder contains checkpoints with different datasets. 
 
-The checkpoints should be downloaded to the ./ckpt folder, e.g., you should have './ckpt/ckpt_000115.pth' for the experiment using SVHN dataset.
-
-The following commands synthesize 50,000 new images and evaluate the FIDs.
-
-If you want to test the reconstruction ability. Please add '--testing_reconstruct' into the commands and it will reconstruct testing sets and report reconstruction errors.     
+The checkpoints should be downloaded to the ./ckpt folder, e.g., you should have './ckpt/ckpt_000115.pth' for the experiment using SVHN dataset. The following commands synthesize 50,000 new images and evaluate the FIDs. If you want to test the reconstruction ability. Please add '--testing_reconstruct' into the commands and it will reconstruct testing sets and report reconstruction errors.     
 
 (a) SVHN dataset
 
