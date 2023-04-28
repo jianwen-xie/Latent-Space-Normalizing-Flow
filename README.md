@@ -6,8 +6,8 @@ This repository contains a pytorch implementation for AAAI 2023 paper "[A Tale o
 We have provided the environment.yml file for setting up the environment. The environment can be set up with one command using conda
 
 ```bash
-conda env create -f environment.yml
-conda activate fpp
+conda env create -f lfbm.yml
+conda activate lfbm
 ```
 
 ## Reference
