@@ -38,7 +38,6 @@ conda activate fpp
 
     $ python train.py --dataset celeba_crop --g_l_steps 20 --img_size 64 --nz 100 --ngf 128 --g_lr 0.0003 --f_lr 0.0003 
     
-
 #### (ii) Testing
 
 
@@ -68,7 +67,7 @@ CelebA-HQ dataset
 
 
 
-#### dataset:
+#### About dataset:
 The download link for CelebA-HQ seems to broke. Thus, we finally use the CelebA-Mask-HQ "[dataset](https://github.com/switchablenorms/CelebAMask-HQ)", which is a similar large resolution dataset.
 
 To download the data:
