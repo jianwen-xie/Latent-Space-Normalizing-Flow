@@ -116,77 +116,46 @@ class _netG(nn.Module):
                 nn.Tanh()
             )
 
+        elif args.dataset == 'celeba_hq256':
+
+            f = get_activation(args.g_activation, args)
+
+            self.gen = nn.Sequential(
+
+                nn.ConvTranspose2d(args.nz, args.ngf * 16, 4, 1, 0, bias=not args.g_batchnorm),
+                nn.BatchNorm2d(args.ngf * 16) if args.g_batchnorm else nn.Identity(),
+                f,
+
+                nn.ConvTranspose2d(args.ngf * 16, args.ngf * 8, 4, 2, 1, bias=not args.g_batchnorm),
+                nn.BatchNorm2d(args.ngf * 8) if args.g_batchnorm else nn.Identity(),
+                f,
+
+                nn.ConvTranspose2d(args.ngf * 8, args.ngf * 4, 4, 2, 1, bias=not args.g_batchnorm),
+                nn.BatchNorm2d(args.ngf * 4) if args.g_batchnorm else nn.Identity(),
+                f,
+
+                nn.ConvTranspose2d(args.ngf * 4, args.ngf * 2, 4, 2, 1, bias=not args.g_batchnorm),
+                nn.BatchNorm2d(args.ngf * 2) if args.g_batchnorm else nn.Identity(),
+                f,
+
+                nn.ConvTranspose2d(args.ngf * 2, args.ngf * 1, 4, 2, 1, bias=not args.g_batchnorm),
+                nn.BatchNorm2d(args.ngf * 1) if args.g_batchnorm else nn.Identity(),
+                f,
+
+                nn.ConvTranspose2d(args.ngf * 1, args.ngf * 1, 4, 2, 1, bias=not args.g_batchnorm),
+                nn.BatchNorm2d(args.ngf * 1) if args.g_batchnorm else nn.Identity(),
+                f,
+
+                nn.ConvTranspose2d(args.ngf * 1, args.nc, 4, 2, 1),
+                nn.Tanh()
+            )
+
         else:
             raise ValueError(args.dataset)
 
     def forward(self, z):
         return self.gen(z)
-    
 
-class _netG256(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-
-        f = get_activation(args.g_activation, args)
-
-        self.gen = nn.Sequential(
-
-            nn.ConvTranspose2d(args.nz, args.ngf*16, 4, 1, 0, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.ngf*16) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*16, args.ngf*8, 4, 2, 1, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.ngf*8) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*8, args.ngf*4, 4, 2, 1, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.ngf*4) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*4, args.ngf*2, 4, 2, 1, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.ngf*2) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*2, args.ngf*1, 4, 2, 1, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.ngf*1) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*1, args.ngf*1, 4, 2, 1, bias = not args.g_batchnorm),
-            nn.BatchNorm2d(args.ngf*1) if args.g_batchnorm else nn.Identity(),
-            f,
-
-            nn.ConvTranspose2d(args.ngf*1, args.nc, 4, 2, 1),
-            nn.Tanh()
-        )
-
-    def forward(self, z):
-        return self.gen(z)
-
-####################################################
-## EBM
-
-class _netE(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-
-        self.args = args
-
-        apply_sn = sn if args.e_sn else lambda x: x
-
-        f = get_activation(args.e_activation, args)
-
-        self.ebm = nn.Sequential(
-            apply_sn(nn.Linear(args.nz, args.ndf)),
-            f,
-
-            apply_sn(nn.Linear(args.ndf, args.ndf)),
-            f,
-
-            apply_sn(nn.Linear(args.ndf, args.nez))
-        )
-
-    def forward(self, z):
-        return self.ebm(z.squeeze()).view(-1, self.args.nez, 1, 1)
 
 ####################################################
 ## flow
