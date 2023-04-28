@@ -3,7 +3,7 @@
 This repository contains a pytorch implementation for AAAI 2023 paper "[A Tale of Two Latent Flows: Learning Latent Space Normalizing Flow with Short-run Langevin Flow for Approximate Inference](https://arxiv.org/pdf/2301.09300.pdf)"
 
 ## Set Up Environment
-We have provided the environment.yml file for setting up the environment. The environment can be set up with one command using conda
+We have provided the environment file lfbm.yml for setting up the environment. The environment can be set up with one command using conda
 
 ```bash
 conda env create -f lfbm.yml
