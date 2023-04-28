@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument('--test_mode', action='store_true', default=False, help='test or not')
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--gpu_deterministic', type=bool, default=False, help='set cudnn in deterministic mode (slow)')
-    parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'cifar10', 'celeba_crop'])
+    parser.add_argument('--dataset', type=str, default='svhn', choices=['svhn', 'cifar10', 'celeba_crop', 'celeba_hq256'])
     parser.add_argument('--img_size', default=32, type=int)
     parser.add_argument('--batch_size', default=100, type=int)
     parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
@@ -198,6 +198,22 @@ def get_dataset(args):
                                                         transforms.Resize(args.img_size),
                                                         transforms.ToTensor(),
                                                         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]))
+        return ds_train, ds_val
+
+    elif args.dataset == 'celeba_hq256':
+
+        import torchvision.transforms as transforms
+        transform_train = transforms.Compose([transforms.Resize(args.img_size),
+                                            transforms.RandomHorizontalFlip(),
+                                            transforms.ToTensor(),
+                                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        transform_val = transforms.Compose([transforms.Resize(args.img_size),
+                                            transforms.ToTensor(),
+                                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
+        ds_train = torchvision.datasets.ImageFolder(root='./data/CelebAMask-HQ', transform=transform_train)
+        ds_val = torchvision.datasets.ImageFolder(root='./data/CelebAMask-HQ', transform=transform_val)
+
         return ds_train, ds_val
 
     else:
