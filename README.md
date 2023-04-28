@@ -60,17 +60,17 @@ The checkpoints should be downloaded to the ./ckpt folder, e.g., you should have
     $ python train.py --dataset celeba_crop --test_mode --g_l_steps 400 --img_size 64 --nz 100 --ngf 128 --g_lr 0.0003 --f_lr 0.0003 --path_check_point ./ckpt/ckpt_000071.pth --n_fid_samples 50000
     
 
-#### (3) 
+#### (iii) 256 x 256 Image Generation 
 
-update the 256 structure:
+CelebA-HQ dataset
 
-#### code: 
-```bash
-python train_celeba256.py
-```
+    $ python train.py --dataset celeba_hq256 --g_l_steps 20 --img_size 256 --nz 100 --ngf 128 --g_llhd_sigma 1.0 --f_width 128 --g_lr 0.0003 --f_lr 0.0003 
+
+
 
 #### dataset:
-The download link for CelebA-HQ seems to broke. Thus, I finally use the CelebA-Mask-HQ "[dataset](https://github.com/switchablenorms/CelebAMask-HQ)", which is a similar large resolution dataset.
+The download link for CelebA-HQ seems to broke. Thus, we finally use the CelebA-Mask-HQ "[dataset](https://github.com/switchablenorms/CelebAMask-HQ)", which is a similar large resolution dataset.
+
 To download the data:
 
 ```bash
@@ -83,5 +83,4 @@ rm *.txt
 rm -r -f CelebAMask-HQ-mask-anno/
 ```
 
-The last 2 lines remove some used information. This enables the data to be loaded in correctly.
-After download the data, make sure in line 301 and 302, you data path point to the CelebAMask-HQ folder.
+After download the data, make sure that the data path points to the CelebAMask-HQ folder.
